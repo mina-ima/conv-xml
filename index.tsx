@@ -90,6 +90,7 @@ const addLog = (msg: string) => {
 const parseAmountValue = (str: string): number => {
     if (!str) return 0;
     const num = parseInt(str.replace(/[^0-9]/g, "")) || 0;
+    // 「千円」または「千」が含まれている場合は1000倍する
     if (str.includes("千")) {
         return num * 1000;
     }
@@ -117,19 +118,22 @@ const calculateInsurance = (row: any, rates: typeof state.rates) => {
     if (gengoRaw && !isNaN(y)) {
         let birthYear = 0;
         const g = String(gengoRaw).trim();
-        // 1:明治, 3:大正, 5:昭和, 7:平成, 9:令和
-        if (g === "1") birthYear = 1867 + y;
-        else if (g === "3") birthYear = 1911 + y;
-        else if (g === "5") birthYear = 1925 + y;
-        else if (g === "7") birthYear = 1988 + y;
-        else if (g === "9") birthYear = 2018 + y;
+        
+        // 年金機構のコード(1,3,5,7,9)と漢字の両方に対応
+        if (g === "1" || g === "明治") birthYear = 1867 + y;
+        else if (g === "3" || g === "大正") birthYear = 1911 + y;
+        else if (g === "5" || g === "昭和") birthYear = 1925 + y;
+        else if (g === "7" || g === "平成") birthYear = 1988 + y;
+        else if (g === "9" || g === "令和") birthYear = 2018 + y;
 
         if (birthYear > 0) {
             const today = new Date();
             age = today.getFullYear() - birthYear;
+            // 誕生日前なら1歳引く
             if (today.getMonth() + 1 < m || (today.getMonth() + 1 === m && today.getDate() < d)) {
                 age--;
             }
+            // 介護保険 第2号被保険者は 40歳以上65歳未満 (正確には誕生日の前日からだが、実務上月単位)
             isNursingSubject = (age >= 40 && age < 65);
         }
     }
@@ -142,11 +146,14 @@ const calculateInsurance = (row: any, rates: typeof state.rates) => {
 
 const exportCalcToCSV = (data: UniversalData) => {
     const section = data.sections.find(s => s.isTable);
-    if (!section) return;
+    if (!section) {
+        alert("出力可能なテーブルデータが見つかりませんでした。");
+        return;
+    }
     const rows = section.data;
     
-    let csv = "\uFEFF"; // UTF-8 BOM
-    csv += "整理番号,被保険者氏名,年齢,標準額(健康保険),標準額(厚生年金),健康保険料(従業員負担分),厚生年金保険料(従業員負担分),介護保険料(従業員負担分),合計(従業員負担分)\n";
+    let csv = "\uFEFF"; // UTF-8 BOM (Excel文字化け防止)
+    csv += "整理番号,被保険者氏名,年齢,判定,標準額(健康保険),標準額(厚生年金),健康保険料(従業員負担分),厚生年金保険料(従業員負担分),介護保険料(従業員負担分),合計(従業員負担分)\n";
     
     rows.forEach(row => {
         const res = calculateInsurance(row, state.rates);
@@ -154,6 +161,7 @@ const exportCalcToCSV = (data: UniversalData) => {
             row["被保険者整理番号"] || "",
             row["被保険者氏名"] || "",
             res.age >= 0 ? res.age : "-",
+            res.isNursingSubject ? "介護対象" : "対象外",
             res.hSalary,
             res.pSalary,
             res.healthEmp,
@@ -166,8 +174,10 @@ const exportCalcToCSV = (data: UniversalData) => {
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `保険料シミュレーション_${data.companyName || 'export'}.csv`;
+    link.download = `保険料計算結果_${data.companyName || 'export'}.csv`;
+    document.body.appendChild(link);
     link.click();
+    document.body.removeChild(link);
 };
 
 // --- XML Utilities ---
@@ -354,7 +364,7 @@ const renderCalculationOverlay = (data: UniversalData) => {
                                 <td class="py-4 px-2 text-right font-mono font-bold text-blue-600 bg-blue-50/20">${res.healthEmp.toLocaleString()} 円</td>
                                 <td class="py-4 px-2 text-right font-mono font-bold text-indigo-600 bg-indigo-50/20">${res.pensionEmp.toLocaleString()} 円</td>
                                 <td class="py-4 px-2 text-right font-mono font-bold ${res.isNursingSubject ? 'text-emerald-600 bg-emerald-50/20' : 'text-slate-300 bg-slate-100/50'}">
-                                    ${res.isNursingSubject ? `${res.nursingEmp.toLocaleString()} 円` : `<span class="text-[10px]">対象外(${res.age}歳)</span>`}
+                                    ${res.isNursingSubject ? `${res.nursingEmp.toLocaleString()} 円` : `<span class="text-[10px] opacity-60">対象外(${res.age >= 0 ? res.age : '?'}歳)</span>`}
                                 </td>
                                 <td class="py-4 px-2 text-right font-mono font-black text-white bg-slate-800">${res.totalEmp.toLocaleString()} 円</td>
                             </tr>`; 
@@ -364,8 +374,8 @@ const renderCalculationOverlay = (data: UniversalData) => {
                 <div class="p-8 bg-slate-50 border-t flex justify-between items-center">
                     <p class="text-[11px] text-slate-400 font-bold leading-relaxed">※介護保険料は40歳〜64歳の被保険者のみ計算しています。<br>※金額表示は 1,000円 単位の読み替えを反映した合計額です。</p>
                     <div class="flex gap-4">
-                        <button id="calcToCsvBtn" class="bg-white border border-slate-300 text-slate-900 px-8 py-4 rounded-2xl font-black text-xs shadow-sm flex items-center gap-2 hover:bg-slate-100 transition-all"><i data-lucide="download" size="16"></i> CSV出力</button>
-                        <button id="closeCalcBtnBottom" class="bg-blue-600 text-white px-8 py-4 rounded-2xl font-black text-xs">確認終了</button>
+                        <button id="calcToCsvBtn" class="bg-white border border-slate-300 text-slate-900 px-8 py-4 rounded-2xl font-black text-xs shadow-sm flex items-center gap-2 hover:bg-slate-100 transition-all cursor-pointer"><i data-lucide="download" size="16"></i> CSV出力</button>
+                        <button id="closeCalcBtnBottom" class="bg-blue-600 text-white px-8 py-4 rounded-2xl font-black text-xs cursor-pointer">確認終了</button>
                     </div>
                 </div>
             </div>
@@ -428,12 +438,12 @@ const render = () => {
 
     root.innerHTML = `
         <div class="h-screen flex flex-col bg-slate-100 overflow-hidden no-print">
-            <header class="bg-white border-b px-10 py-5 flex items-center justify-between shadow-sm z-50"><div class="flex items-center gap-5"><button id="resetBtn" class="bg-slate-100 p-3 rounded-xl"><i data-lucide="home" size="20"></i></button><h1 class="text-xl font-black tracking-tight">e-Gov Pro Explorer</h1></div><button id="toggleSettingsTop" class="bg-slate-100 text-slate-600 px-6 py-3 rounded-xl text-xs font-black">料率設定</button></header>
+            <header class="bg-white border-b px-10 py-5 flex items-center justify-between shadow-sm z-50"><div class="flex items-center gap-5"><button id="resetBtn" class="bg-slate-100 p-3 rounded-xl cursor-pointer hover:bg-slate-200"><i data-lucide="home" size="20"></i></button><h1 class="text-xl font-black tracking-tight">e-Gov Pro Explorer</h1></div><button id="toggleSettingsTop" class="bg-slate-100 text-slate-600 px-6 py-3 rounded-xl text-xs font-black cursor-pointer hover:bg-slate-200">料率設定</button></header>
             <div class="flex-1 flex overflow-hidden">
-                <aside class="w-80 bg-white border-r flex flex-col overflow-hidden"><div class="p-5 border-b bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">Case Files</div><div class="flex-1 overflow-y-auto p-3 space-y-2">${state.cases.map((c, cIdx) => `<div><button class="w-full flex items-center gap-2 p-3 font-bold text-slate-700 text-sm hover:bg-slate-50 rounded-lg toggle-case-btn" data-index="${cIdx}"><i data-lucide="${c.isOpen ? 'chevron-down' : 'chevron-right'}" size="14"></i><span class="truncate">${c.folderName}</span></button>${c.isOpen ? c.files.map((f, fIdx) => `<button class="w-full text-left ml-5 p-3 text-xs font-bold rounded-lg mt-1 select-file-btn ${cIdx === state.selectedCaseIdx && fIdx === state.selectedFileIdx ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:bg-blue-50'}" data-case="${cIdx}" data-file="${fIdx}">${f.name}</button>`).join('') : ''}</div>`).join('')}</div></aside>
+                <aside class="w-80 bg-white border-r flex flex-col overflow-hidden"><div class="p-5 border-b bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">Case Files</div><div class="flex-1 overflow-y-auto p-3 space-y-2">${state.cases.map((c, cIdx) => `<div><button class="w-full flex items-center gap-2 p-3 font-bold text-slate-700 text-sm hover:bg-slate-50 rounded-lg toggle-case-btn cursor-pointer" data-index="${cIdx}"><i data-lucide="${c.isOpen ? 'chevron-down' : 'chevron-right'}" size="14"></i><span class="truncate">${c.folderName}</span></button>${c.isOpen ? c.files.map((f, fIdx) => `<button class="w-full text-left ml-5 p-3 text-xs font-bold rounded-lg mt-1 select-file-btn cursor-pointer ${cIdx === state.selectedCaseIdx && fIdx === state.selectedFileIdx ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:bg-blue-50'}" data-case="${cIdx}" data-file="${fIdx}">${f.name}</button>`).join('') : ''}</div>`).join('')}</div></aside>
                 <main class="flex-1 bg-slate-200 overflow-y-auto p-4 md:p-10 flex flex-col items-center relative">
-                    <div class="mb-6 flex bg-white p-1.5 rounded-2xl shadow-lg sticky top-0 z-10 no-print"><button id="viewSummaryBtn" class="px-8 py-3 rounded-xl text-xs font-black transition-all ${state.viewMode === 'summary' ? 'bg-blue-600 text-white' : 'text-slate-500'}">通知書表示</button><button id="viewTreeBtn" class="px-8 py-3 rounded-xl text-xs font-black transition-all ${state.viewMode === 'tree' ? 'bg-blue-600 text-white' : 'text-slate-500'}">データ構造</button></div>
-                    ${state.viewMode === 'summary' && data && (data.isStandardNotice || data.isBonusNotice) ? `<div class="w-full max-w-[1000px] mb-6 flex justify-between items-center bg-blue-50 border border-blue-200 p-4 rounded-2xl shadow-sm no-print"><div class="flex items-center gap-3"><div class="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center text-white"><i data-lucide="zap" size="20"></i></div><div><p class="text-xs font-black text-blue-900">業務支援ツール</p><p class="text-[10px] text-blue-600">CSV出力や保険料計算が可能です</p></div></div><div class="flex gap-2"><button id="printBtn" class="bg-white border border-blue-200 text-blue-600 px-4 py-2 rounded-xl text-[11px] font-black hover:bg-blue-100 transition-all">PDF印刷</button><button id="calcMenuBtn" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-[11px] font-black hover:bg-blue-700 shadow-md transition-all">保険料シミュレーション</button></div></div>` : ''}
+                    <div class="mb-6 flex bg-white p-1.5 rounded-2xl shadow-lg sticky top-0 z-10 no-print"><button id="viewSummaryBtn" class="px-8 py-3 rounded-xl text-xs font-black transition-all cursor-pointer ${state.viewMode === 'summary' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-50'}">通知書表示</button><button id="viewTreeBtn" class="px-8 py-3 rounded-xl text-xs font-black transition-all cursor-pointer ${state.viewMode === 'tree' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-50'}">データ構造</button></div>
+                    ${state.viewMode === 'summary' && data && (data.isStandardNotice || data.isBonusNotice) ? `<div class="w-full max-w-[1000px] mb-6 flex justify-between items-center bg-blue-50 border border-blue-200 p-4 rounded-2xl shadow-sm no-print"><div class="flex items-center gap-3"><div class="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center text-white"><i data-lucide="zap" size="20"></i></div><div><p class="text-xs font-black text-blue-900">業務支援ツール</p><p class="text-[10px] text-blue-600">CSV出力や保険料計算が可能です</p></div></div><div class="flex gap-2"><button id="printBtn" class="bg-white border border-blue-200 text-blue-600 px-4 py-2 rounded-xl text-[11px] font-black hover:bg-blue-100 transition-all cursor-pointer">PDF印刷</button><button id="calcMenuBtn" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-[11px] font-black hover:bg-blue-700 shadow-md transition-all cursor-pointer">保険料シミュレーション</button></div></div>` : ''}
                     <div class="print-container">${state.viewMode === 'summary' && data ? renderDocument(data) : (currentFile ? renderTree(currentFile.parsed!) : '')}</div>
                 </main>
             </div>
@@ -445,7 +455,7 @@ const render = () => {
     if ((window as any).lucide) (window as any).lucide.createIcons();
 };
 
-const renderSettings = () => `<div class="fixed inset-0 bg-black/80 backdrop-blur-md z-[300] flex items-center justify-center p-5"><div class="bg-white p-12 rounded-[3rem] max-w-md w-full shadow-2xl"><h2 class="text-3xl font-black mb-4 tracking-tighter">保険料率設定</h2><div class="space-y-6">${Object.entries(state.rates).map(([k, v]) => `<div><label class="block text-[10px] font-black text-slate-400 mb-2 uppercase">${k} (%)</label><input type="number" step="0.001" value="${v}" data-key="${k}" class="rate-input w-full p-4 bg-slate-100 rounded-2xl font-black text-2xl" /></div>`).join('')}</div><button id="closeSettings" class="w-full mt-10 py-5 bg-blue-600 text-white font-black rounded-2xl shadow-xl hover:scale-105 transition-all">保存して次へ</button></div></div>`;
+const renderSettings = () => `<div class="fixed inset-0 bg-black/80 backdrop-blur-md z-[300] flex items-center justify-center p-5"><div class="bg-white p-12 rounded-[3rem] max-w-md w-full shadow-2xl"><h2 class="text-3xl font-black mb-4 tracking-tighter">保険料率設定</h2><div class="space-y-6">${Object.entries(state.rates).map(([k, v]) => `<div><label class="block text-[10px] font-black text-slate-400 mb-2 uppercase">${k} (%)</label><input type="number" step="0.001" value="${v}" data-key="${k}" class="rate-input w-full p-4 bg-slate-100 rounded-2xl font-black text-2xl" /></div>`).join('')}</div><button id="closeSettings" class="w-full mt-10 py-5 bg-blue-600 text-white font-black rounded-2xl shadow-xl hover:scale-105 transition-all cursor-pointer">保存して次へ</button></div></div>`;
 
 const attachEvents = () => {
     document.getElementById('resetBtn')?.addEventListener('click', () => { state.cases = []; render(); });
@@ -457,10 +467,17 @@ const attachEvents = () => {
     document.getElementById('calcMenuBtn')?.addEventListener('click', () => { state.showSettings = true; state.isSimulating = true; render(); });
     document.getElementById('closeCalcBtn')?.addEventListener('click', () => { state.showCalcResults = false; render(); });
     document.getElementById('closeCalcBtnBottom')?.addEventListener('click', () => { state.showCalcResults = false; render(); });
+    
+    // CSV出力ボタンのイベントリスナー（確実に現在の解析データを参照するよう修正）
     document.getElementById('calcToCsvBtn')?.addEventListener('click', () => { 
         const currentFile = state.cases[state.selectedCaseIdx]?.files[state.selectedFileIdx];
-        if (currentFile?.analysis) exportCalcToCSV(currentFile.analysis);
+        if (currentFile?.analysis) {
+            exportCalcToCSV(currentFile.analysis);
+        } else {
+            alert("データが見つかりません。");
+        }
     });
+
     document.querySelectorAll('.toggle-case-btn').forEach(btn => btn.addEventListener('click', (e) => { const idx = parseInt((e.currentTarget as HTMLElement).dataset.index!); state.cases[idx].isOpen = !state.cases[idx].isOpen; render(); }));
     document.querySelectorAll('.select-file-btn').forEach(btn => btn.addEventListener('click', (e) => { const target = e.currentTarget as HTMLElement; state.selectedCaseIdx = parseInt(target.dataset.case!); state.selectedFileIdx = parseInt(target.dataset.file!); render(); }));
     document.querySelectorAll('.rate-input').forEach(input => input.addEventListener('change', (e) => { const el = e.target as HTMLInputElement; (state.rates as any)[el.dataset.key!] = parseFloat(el.value); }));
