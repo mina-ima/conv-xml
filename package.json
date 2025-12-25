@@ -10,10 +10,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@google/genai": "latest"
+    "@google/genai": "latest",
+    "jszip": "latest"
   },
   "devDependencies": {
     "vite": "latest",
-    "typescript": "latest"
+    "typescript": "latest",
+    "@types/jszip": "latest"
   }
 }

@@ -16,7 +16,7 @@ interface UniversalData {
     sections: {
         name: string;
         isTable: boolean;
-        data: any[]; // Rows for table, or nested objects
+        data: any[]; 
         headers?: string[];
     }[];
 }
@@ -64,10 +64,6 @@ const parseXML = (xmlString: string): XMLNode => {
     return traverse(xmlDoc.documentElement);
 };
 
-/**
- * 汎用的なデータ抽出エンジン
- * 全ての情報を「ヘッダー」か「セクション（表含む）」に分類する
- */
 const extractUniversalData = (node: XMLNode): UniversalData => {
     const headers: Record<string, string> = {};
     const sections: UniversalData['sections'] = [];
@@ -78,10 +74,8 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
             return;
         }
 
-        // 子要素の出現頻度を確認して「リスト（表）」を特定
         const counts: Record<string, number> = {};
         n.children.forEach(c => counts[c.name] = (counts[c.name] || 0) + 1);
-
         const listTag = Object.keys(counts).find(tag => counts[tag] > 1);
 
         if (listTag) {
@@ -106,25 +100,16 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
                 headers: Array.from(tableHeaders),
                 data: rows
             });
-
-            // リスト以外の兄弟要素も処理
             n.children.filter(c => c.name !== listTag).forEach(c => processNode(c, n.name + "_"));
         } else {
-            // 単発要素の集合
             n.children.forEach(c => processNode(c, path + n.name + "_"));
         }
     };
 
     processNode(node);
-
-    return {
-        title: node.name,
-        headers,
-        sections
-    };
+    return { title: node.name, headers, sections };
 };
 
-// --- Premium Calculation Logic ---
 const calculateIfPossible = (data: UniversalData) => {
     const section = data.sections.find(s => s.isTable);
     if (!section || !section.headers) return null;
@@ -155,7 +140,6 @@ const calculateIfPossible = (data: UniversalData) => {
     });
 };
 
-// --- Renderer ---
 const render = () => {
     const root = document.getElementById('root');
     if (!root) return;
@@ -169,8 +153,8 @@ const render = () => {
                     </div>
                     <h2 class="text-4xl font-black mb-6 text-slate-900 tracking-tight">e-Gov ZIP / XML Reader</h2>
                     <p class="text-slate-500 mb-12 text-lg font-medium leading-relaxed">
-                        e-GovのZIPファイル、またはXMLファイルをアップロードしてください。<br>
-                        中身を解析し、情報を漏れなく表示します。
+                        e-GovからダウンロードしたZIPファイル、またはXMLファイルを読み込みます。<br>
+                        中にある書類を漏れなく表示します。
                     </p>
                     <label class="group relative block w-full py-6 px-10 bg-blue-600 hover:bg-blue-700 text-white font-black text-xl rounded-2xl cursor-pointer transition-all shadow-xl active:scale-95">
                         <span class="flex items-center justify-center gap-3"><i data-lucide="upload-cloud"></i> ファイルを選択 (ZIP/XML)</span>
@@ -192,10 +176,9 @@ const render = () => {
                         <div class="bg-slate-900 p-2 rounded-lg text-white"><i data-lucide="home" size="18"></i></div>
                         <h1 class="text-lg font-black tracking-tighter">e-Gov Universal Viewer</h1>
                     </div>
-                    
                     <div class="flex items-center gap-3">
                         ${state.files.length > 1 ? `
-                            <select id="fileSelector" class="bg-slate-100 border-none rounded-xl px-4 py-2 text-sm font-bold text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none">
+                            <select id="fileSelector" class="bg-slate-100 border-none rounded-xl px-4 py-2 text-sm font-bold text-slate-700 outline-none">
                                 ${state.files.map((f, i) => `<option value="${i}" ${i === state.selectedFileIndex ? 'selected' : ''}>${f.name}</option>`).join('')}
                             </select>
                         ` : ''}
@@ -204,10 +187,9 @@ const render = () => {
                         </button>
                     </div>
                 </header>
-
                 <main class="flex-1 max-w-[1400px] w-full mx-auto p-8">
                     ${state.showSettings ? `
-                        <div class="mb-8 p-8 bg-white rounded-3xl shadow-xl border border-blue-100 grid grid-cols-1 md:grid-cols-3 gap-6 animate-in slide-in-from-top-2">
+                        <div class="mb-8 p-8 bg-white rounded-3xl shadow-xl border border-blue-100 grid grid-cols-1 md:grid-cols-3 gap-6">
                             ${Object.entries(state.rates).map(([k, v]) => `
                                 <div>
                                     <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${k === 'health' ? '健康保険' : k === 'pension' ? '厚生年金' : '介護保険'} (%)</label>
@@ -216,46 +198,36 @@ const render = () => {
                             `).join('')}
                         </div>
                     ` : ''}
-
                     ${state.viewMode === 'summary' && analysis ? `
                         <div class="space-y-8">
-                            <!-- Document Header Card -->
                             <div class="bg-white rounded-[2.5rem] shadow-xl border border-slate-200 overflow-hidden">
                                 <div class="bg-slate-900 p-8 text-white flex items-center justify-between">
-                                    <div>
-                                        <p class="text-[10px] font-black opacity-50 uppercase tracking-widest mb-1">Document Type</p>
-                                        <h2 class="text-2xl font-black">${analysis.title}</h2>
-                                    </div>
+                                    <div><h2 class="text-2xl font-black">${analysis.title}</h2></div>
                                     <div class="bg-white/10 px-4 py-2 rounded-xl text-xs font-bold">${currentFile.name}</div>
                                 </div>
-                                <div class="p-8 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-6 bg-slate-50/50">
+                                <div class="p-8 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 bg-slate-50/50">
                                     ${Object.entries(analysis.headers).map(([k, v]) => `
-                                        <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                                        <div class="bg-white p-4 rounded-xl border border-slate-100">
                                             <p class="text-[9px] font-black text-slate-400 uppercase tracking-tighter mb-1">${k.replace(/_/g, ' ')}</p>
                                             <p class="text-sm font-bold text-slate-800 break-all">${v}</p>
                                         </div>
                                     `).join('')}
                                 </div>
                             </div>
-
-                            <!-- Repeatable Sections -->
                             ${analysis.sections.map((section, sIdx) => `
                                 <div class="bg-white rounded-[2.5rem] shadow-xl border border-slate-200 overflow-hidden">
-                                    <div class="p-6 border-b flex items-center gap-3">
-                                        <div class="w-1.5 h-6 bg-blue-600 rounded-full"></div>
-                                        <h3 class="text-lg font-black text-slate-800">${section.name} リスト</h3>
-                                    </div>
+                                    <div class="p-6 border-b"><h3 class="text-lg font-black text-slate-800">${section.name} リスト</h3></div>
                                     <div class="overflow-x-auto">
                                         <table class="w-full text-left whitespace-nowrap">
                                             <thead class="bg-slate-50">
                                                 <tr>
                                                     ${section.headers?.map(h => `<th class="p-4 text-[10px] font-black text-slate-400 uppercase tracking-tighter border-b">${h.replace(/.*_/, '')}</th>`).join('')}
-                                                    ${calculations && section.isTable ? `<th class="p-4 text-[10px] font-black text-blue-600 uppercase border-b text-right">概算本人負担</th>` : ''}
+                                                    ${calculations && section.isTable ? `<th class="p-4 text-[10px] font-black text-blue-600 border-b text-right">本人負担</th>` : ''}
                                                 </tr>
                                             </thead>
                                             <tbody class="divide-y divide-slate-100">
                                                 ${section.data.map((row, rIdx) => `
-                                                    <tr class="hover:bg-blue-50/20 transition-colors">
+                                                    <tr>
                                                         ${section.headers?.map(h => `<td class="p-4 text-sm font-medium text-slate-600">${row[h] || '-'}</td>`).join('')}
                                                         ${calculations && section.isTable ? `<td class="p-4 text-sm font-black text-right text-blue-700 bg-blue-50/10">¥${calculations[rIdx]?.toLocaleString()}</td>` : ''}
                                                     </tr>
@@ -267,14 +239,13 @@ const render = () => {
                             `).join('')}
                         </div>
                     ` : `
-                        <div class="bg-slate-900 p-10 rounded-[3rem] shadow-2xl overflow-auto text-blue-200 font-mono text-xs max-h-[80vh] border-8 border-slate-800">
-                            ${currentFile.parsed ? renderTree(currentFile.parsed) : 'No data parsed'}
+                        <div class="bg-slate-900 p-10 rounded-[3rem] shadow-2xl overflow-auto text-blue-200 font-mono text-xs max-h-[80vh]">
+                            ${currentFile.parsed ? renderTree(currentFile.parsed) : 'No data'}
                         </div>
                     `}
                 </main>
-
                 <div class="fixed bottom-8 right-8 flex gap-2">
-                    <button id="viewSummary" class="px-6 py-3 rounded-2xl font-black text-sm shadow-2xl transition-all ${state.viewMode === 'summary' ? 'bg-blue-600 text-white scale-110' : 'bg-white text-slate-600'}">書類表示</button>
+                    <button id="viewSummary" class="px-6 py-3 rounded-2xl font-black text-sm shadow-2xl transition-all ${state.viewMode === 'summary' ? 'bg-blue-600 text-white scale-110' : 'bg-white text-slate-600'}">帳票表示</button>
                     <button id="viewTree" class="px-6 py-3 rounded-2xl font-black text-sm shadow-2xl transition-all ${state.viewMode === 'tree' ? 'bg-blue-600 text-white scale-110' : 'bg-white text-slate-600'}">Raw構造</button>
                 </div>
             </div>
@@ -286,7 +257,7 @@ const render = () => {
 
 const renderTree = (node: XMLNode): string => {
     return `
-        <div class="xml-node my-1 border-l border-slate-800 pl-4">
+        <div class="xml-node my-1">
             <span class="text-indigo-400">&lt;${node.name}&gt;</span>
             ${node.content ? `<span class="text-white ml-2">${node.content}</span>` : ''}
             <div>${node.children.map(c => renderTree(c)).join('')}</div>
@@ -298,14 +269,13 @@ const renderTree = (node: XMLNode): string => {
 const handleFile = async (e: Event) => {
     const file = (e.target as HTMLInputElement).files?.[0];
     if (!file) return;
-
     state.files = [];
     state.isLoading = true;
     render();
-
     try {
         if (file.name.endsWith('.zip')) {
-            const zip = await JSZip.loadAsync(file);
+            const zipData = await file.arrayBuffer();
+            const zip = await JSZip.loadAsync(zipData);
             for (const filename of Object.keys(zip.files)) {
                 if (filename.endsWith('.xml')) {
                     const content = await zip.files[filename].async('string');
@@ -318,11 +288,9 @@ const handleFile = async (e: Event) => {
             const parsed = parseXML(content);
             state.files.push({ name: file.name, content, parsed, analysis: extractUniversalData(parsed) });
         }
-        
-        if (state.files.length === 0) alert("有効なXMLファイルが見つかりませんでした。");
-        state.selectedFileIndex = 0;
+        if (state.files.length === 0) alert("XMLファイルが見つかりませんでした。");
     } catch (err) {
-        alert("ファイルの解析に失敗しました。");
+        alert("エラーが発生しました。");
     } finally {
         state.isLoading = false;
         render();
@@ -334,12 +302,10 @@ const attachEvents = () => {
     document.getElementById('toggleSettings')?.addEventListener('click', () => { state.showSettings = !state.showSettings; render(); });
     document.getElementById('viewSummary')?.addEventListener('click', () => { state.viewMode = 'summary'; render(); });
     document.getElementById('viewTree')?.addEventListener('click', () => { state.viewMode = 'tree'; render(); });
-    
     document.getElementById('fileSelector')?.addEventListener('change', (e) => {
         state.selectedFileIndex = parseInt((e.target as HTMLSelectElement).value);
         render();
     });
-
     document.querySelectorAll('.rate-input').forEach(input => {
         input.addEventListener('change', (e) => {
             const el = e.target as HTMLInputElement;
