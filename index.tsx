@@ -90,7 +90,7 @@ const parseStandardAmount = (val: string): number => {
 const calculateAge = (birthDateAD: string): number => {
     if (!birthDateAD) return 0;
     const birth = new Date(birthDateAD);
-    const today = new Date(); // 実務上は徴収月基準だが、簡易シミュレータとして現在日付
+    const today = new Date();
     let age = today.getFullYear() - birth.getFullYear();
     const m = today.getMonth() - birth.getMonth();
     if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) {
@@ -275,24 +275,45 @@ const downloadCSV = () => {
     const data = state.cases[state.selectedCaseIdx]?.files[state.selectedFileIdx]?.analysis;
     if (!data) return;
     const isBonus = data.docType === 'BONUS_NOTICE';
-    const h = ["整理番号", "氏名", "支払日/適用月", "標準額(健保)", "標準額(厚年)", "生年月日", "種別"];
-    const csv = [h.join(","), ...data.rows.map(r => {
-        const datePrefix = isBonus ? "賞与支払年月日" : "適用年月";
-        const payDate = getFormattedDates(r[`${datePrefix}_元号`], r[`${datePrefix}_年`], r[`${datePrefix}_月`], r[`${datePrefix}_日`] || "1").ad;
-        const birthDate = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]).ad;
-        let amtH = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
-        let amtP = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
-        
-        // 全て千円単位として扱う指示に従い1000倍
-        amtH *= 1000;
-        amtP *= 1000;
-        
-        return [normalize(r["被保険者整理番号"]), `"${normalize(r["被保険者氏名"])}"`, payDate, amtH, amtP, birthDate, normalize(r["種別"])].join(",");
-    })].join("\n");
+
+    let csv = "";
+    if (state.viewMode === 'calculator') {
+        // シミュレーター用の特別CSV出力 (8項目)
+        const headers = ["氏名", "年齢", "健保標準額", "厚年標準額", "健保控除", "厚年控除", "介護控除", "控除額合計"];
+        csv = [headers.join(","), ...data.rows.map(r => {
+            const birthData = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]);
+            const age = calculateAge(birthData.ad);
+            const rawAmtH = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
+            const rawAmtP = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
+            const amtH = rawAmtH * 1000;
+            const amtP = rawAmtP * 1000;
+            const isNursingTargetAge = age >= 40 && age <= 64;
+            const isNursingActive = state.rates.isNursingTarget ? isNursingTargetAge : false;
+            const hDeduct = Math.floor(amtH * (state.rates.health / 100) / 2);
+            const pDeduct = Math.floor(amtP * (state.rates.pension / 100) / 2);
+            const nDeduct = isNursingActive ? Math.floor(amtH * (state.rates.nursing / 100) / 2) : 0;
+            const total = hDeduct + pDeduct + nDeduct;
+            return [`"${normalize(r["被保険者氏名"])}"`, age, amtH, amtP, hDeduct, pDeduct, nDeduct, total].join(",");
+        })].join("\n");
+    } else {
+        // 通常の決定通知データ出力
+        const h = ["整理番号", "氏名", "支払日/適用月", "標準額(健保)", "標準額(厚年)", "生年月日", "種別"];
+        csv = [h.join(","), ...data.rows.map(r => {
+            const datePrefix = isBonus ? "賞与支払年月日" : "適用年月";
+            const payDate = getFormattedDates(r[`${datePrefix}_元号`], r[`${datePrefix}_年`], r[`${datePrefix}_月`], r[`${datePrefix}_日`] || "1").ad;
+            const birthDate = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]).ad;
+            let amtH = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
+            let amtP = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
+            amtH *= 1000;
+            amtP *= 1000;
+            return [normalize(r["被保険者整理番号"]), `"${normalize(r["被保険者氏名"])}"`, payDate, amtH, amtP, birthDate, normalize(r["種別"])].join(",");
+        })].join("\n");
+    }
+    
     const blob = new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `${data.title}.csv`;
+    link.download = `${data.title}_${state.viewMode === 'calculator' ? '控除シミュレーション' : 'データ一覧'}.csv`;
     link.click();
 };
 
@@ -426,7 +447,6 @@ const renderNoticeSheet = (data: UniversalData) => {
                     const birthDate = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]);
                     const val1 = normalize(r[isBonusDoc ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
                     const val2 = normalize(r[isBonusDoc ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
-                    // 指示通り通知書には「千円」単位を明示
                     return `<tr class="h-20 text-center border-b border-black"><td class="border-r border-black">${normalize(r["被保険者整理番号"] || "")}</td><td class="border-r border-black text-left px-6 font-black text-xl">${normalize(r["被保険者氏名"] || "")}</td><td class="border-r border-black"><div>${payDate.jp}</div><div class="text-blue-600 text-[11px] font-bold">(${payDate.ad})</div></td><td class="border-r border-black px-2 font-black text-lg w-32"><div class="text-[10px] font-normal text-slate-400 mb-1">(健保)</div>${val1}千円</td><td class="border-r border-black px-2 font-black text-lg w-32"><div class="text-[10px] font-normal text-slate-400 mb-1">(厚年)</div>${val2}千円</td><td class="border-r border-black"><div>${birthDate.jp}</div><div class="text-emerald-600 text-[11px] font-bold">(${birthDate.ad})</div></td><td>${normalize(r["種別"] || "")}</td></tr>`;
                 }).join('')}</tbody>
             </table>
@@ -470,11 +490,11 @@ const renderCalculatorView = (data: UniversalData) => {
                         const birthData = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]);
                         const age = calculateAge(birthData.ad);
                         
-                        // 数値パース。指示に従いXMLの値（千円単位）を円単位に変換
+                        // 数値パース。XMLの値（千円単位）を円単位に変換
                         const rawAmtH = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
                         const rawAmtP = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
                         
-                        // 全ての標準額を一律1000倍して円単位で計算
+                        // 標準額を一律1000倍して円単位で計算
                         const amtH = rawAmtH * 1000;
                         const amtP = rawAmtP * 1000;
 
