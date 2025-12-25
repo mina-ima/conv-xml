@@ -1,6 +1,7 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 
-// --- Types (整合性のために内部に定義) ---
+// --- Types ---
 interface XMLNode {
     name: string;
     attributes: Record<string, string>;
@@ -63,13 +64,13 @@ const parseXML = (xmlString: string): XMLNode => {
 
 // --- Gemini Service ---
 const analyzeXML = async (xmlString: string): Promise<AnalysisResult> => {
-    // process.env.API_KEY はプラットフォームによって注入されます
+    // API Key from environment
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
     const contentSnippet = xmlString.length > 300000 ? xmlString.substring(0, 300000) + "..." : xmlString;
 
     const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
-        contents: `e-Govの通知書XMLからデータを抽出してください。JSON形式で出力してください: {title: string, tableData: {headers: string[], rows: string[][]}}。XML: ${contentSnippet}`,
+        contents: `Extract table data from this e-Gov XML. Output JSON: {title: string, tableData: {headers: string[], rows: string[][]}}. XML: ${contentSnippet}`,
         config: {
             responseMimeType: "application/json",
             responseSchema: {
@@ -90,9 +91,8 @@ const analyzeXML = async (xmlString: string): Promise<AnalysisResult> => {
         }
     });
     
-    // response.text はプロパティとしてアクセスします
     const text = response.text;
-    if (!text) throw new Error("AIからの応答が空でした。");
+    if (!text) throw new Error("Empty response");
     return JSON.parse(text);
 };
 
@@ -222,7 +222,7 @@ const render = () => {
         `;
         attachEvents();
     }
-    // Lucideアイコンの初期化
+    // Icons
     if ((window as any).lucide) (window as any).lucide.createIcons();
 };
 
@@ -253,8 +253,7 @@ const handleFile = (e: Event) => {
         try {
             state.analysis = await analyzeXML(text);
         } catch (err) {
-            console.error("AI Analysis Error:", err);
-            alert("AI解析に失敗しました。ファイルの内容は「構造」タブで確認できます。");
+            console.error(err);
         } finally {
             state.isLoading = false;
             render();
@@ -267,29 +266,23 @@ const attachEvents = () => {
     document.getElementById('resetBtn')?.addEventListener('click', () => { 
         state.xmlContent = null; 
         state.analysis = null;
-        state.parsedNode = null;
         render(); 
     });
     document.getElementById('toggleSettings')?.addEventListener('click', () => { state.showSettings = !state.showSettings; render(); });
     document.getElementById('viewSummary')?.addEventListener('click', () => { state.viewMode = 'summary'; render(); });
     document.getElementById('viewTree')?.addEventListener('click', () => { state.viewMode = 'tree'; render(); });
-    
     document.querySelectorAll('.rate-input').forEach(input => {
         input.addEventListener('change', (e) => {
-            const el = e.target as HTMLInputElement;
-            const key = el.dataset.key as 'health' | 'pension' | 'nursing';
-            state.rates[key] = parseFloat(el.value);
+            const key = (e.target as HTMLInputElement).dataset.key as 'health' | 'pension' | 'nursing';
+            state.rates[key] = parseFloat((e.target as HTMLInputElement).value);
             render();
         });
     });
-
     document.getElementById('downloadCsv')?.addEventListener('click', () => {
         if (!state.analysis?.tableData) return;
         const results = calculatePremiums();
-        const headers = [...state.analysis.tableData.headers, "本人負担合計"].join(',');
-        const rows = results.map(r => [...r.original, r.total].join(',')).join('\n');
-        const csv = "\uFEFF" + headers + "\n" + rows;
-        const blob = new Blob([csv], { type: 'text/csv' });
+        const csv = results.map(r => [...r.original, r.total].join(',')).join('\n');
+        const blob = new Blob(["\uFEFF" + csv], { type: 'text/csv' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         a.download = 'calc_results.csv';
@@ -297,10 +290,5 @@ const attachEvents = () => {
     });
 };
 
-// 起動直後に初回描画
-document.addEventListener('DOMContentLoaded', () => {
-    render();
-});
-
-// 万が一 DOMContentLoaded がすでに発生している場合のために即時実行
+// Start
 render();
