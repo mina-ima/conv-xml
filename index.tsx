@@ -81,15 +81,12 @@ const state = {
 };
 
 // --- Utilities ---
-const addLog = (msg: string) => {
-    console.log(`[Viewer Log] ${msg}`);
-    state.logs.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
-    if (state.logs.length > 100) state.logs.shift();
-};
-
 const parseAmountValue = (str: string): number => {
     if (!str) return 0;
-    const num = parseInt(str.replace(/[^0-9]/g, "")) || 0;
+    // 全角数字やカンマ、単位を除去
+    const cleaned = str.replace(/[０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xFEE0))
+                       .replace(/[^0-9]/g, "");
+    const num = parseInt(cleaned) || 0;
     // 「千円」または「千」が含まれている場合は1000倍する
     if (str.includes("千")) {
         return num * 1000;
@@ -111,15 +108,18 @@ const calculateInsurance = (row: any, rates: typeof state.rates) => {
     let isNursingSubject = false;
     let age = -1;
     const gengoRaw = row["生年月日_元号"];
-    const y = parseInt(row["生年月日_年"]);
-    const m = parseInt(row["生年月日_月"]) || 1;
-    const d = parseInt(row["生年月日_日"]) || 1;
+    const yStr = row["生年月日_年"];
+    const mStr = row["生年月日_月"];
+    const dStr = row["生年月日_日"];
 
-    if (gengoRaw && !isNaN(y)) {
+    if (gengoRaw && yStr) {
         let birthYear = 0;
         const g = String(gengoRaw).trim();
+        const y = parseInt(yStr);
+        const m = parseInt(mStr) || 1;
+        const d = parseInt(dStr) || 1;
         
-        // 年金機構のコード(1,3,5,7,9)と漢字の両方に対応
+        // 元号コードと漢字の両方に対応
         if (g === "1" || g === "明治") birthYear = 1867 + y;
         else if (g === "3" || g === "大正") birthYear = 1911 + y;
         else if (g === "5" || g === "昭和") birthYear = 1925 + y;
@@ -133,7 +133,7 @@ const calculateInsurance = (row: any, rates: typeof state.rates) => {
             if (today.getMonth() + 1 < m || (today.getMonth() + 1 === m && today.getDate() < d)) {
                 age--;
             }
-            // 介護保険 第2号被保険者は 40歳以上65歳未満 (正確には誕生日の前日からだが、実務上月単位)
+            // 介護保険 第2号被保険者は 40歳以上65歳未満
             isNursingSubject = (age >= 40 && age < 65);
         }
     }
@@ -144,7 +144,7 @@ const calculateInsurance = (row: any, rates: typeof state.rates) => {
     return { hSalary, pSalary, healthEmp, pensionEmp, nursingEmp, totalEmp, isNursingSubject, age };
 };
 
-const exportCalcToCSV = (data: UniversalData) => {
+const exportToCSV = (data: UniversalData) => {
     const section = data.sections.find(s => s.isTable);
     if (!section) {
         alert("出力可能なテーブルデータが見つかりませんでした。");
@@ -153,6 +153,8 @@ const exportCalcToCSV = (data: UniversalData) => {
     const rows = section.data;
     
     let csv = "\uFEFF"; // UTF-8 BOM (Excel文字化け防止)
+    
+    // ヘッダー作成
     csv += "整理番号,被保険者氏名,年齢,判定,標準額(健康保険),標準額(厚生年金),健康保険料(従業員負担分),厚生年金保険料(従業員負担分),介護保険料(従業員負担分),合計(従業員負担分)\n";
     
     rows.forEach(row => {
@@ -161,7 +163,7 @@ const exportCalcToCSV = (data: UniversalData) => {
             row["被保険者整理番号"] || "",
             row["被保険者氏名"] || "",
             res.age >= 0 ? res.age : "-",
-            res.isNursingSubject ? "介護対象" : "対象外",
+            res.isNursingSubject ? "介護対象" : `対象外(${res.age}歳)`,
             res.hSalary,
             res.pSalary,
             res.healthEmp,
@@ -174,7 +176,7 @@ const exportCalcToCSV = (data: UniversalData) => {
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `保険料計算結果_${data.companyName || 'export'}.csv`;
+    link.download = `保険料計算_${data.companyName || 'export'}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -349,22 +351,23 @@ const renderCalculationOverlay = (data: UniversalData) => {
             <div class="bg-white rounded-[2.5rem] w-full max-w-7xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
                 <div class="p-8 border-b flex justify-between items-center bg-slate-50">
                     <div><h2 class="text-2xl font-black tracking-tighter">保険料シミュレーション（従業員負担分）</h2><p class="text-xs text-slate-500 font-bold mt-1">以下の料率で計算: 健保 ${state.rates.health}% / 厚年 ${state.rates.pension}% / 介護 ${state.rates.nursing}%</p></div>
-                    <button id="closeCalcBtn" class="w-10 h-10 bg-slate-200 rounded-full flex items-center justify-center hover:bg-slate-300 transition-all"><i data-lucide="x" size="20"></i></button>
+                    <button id="closeCalcBtn" class="w-10 h-10 bg-slate-200 rounded-full flex items-center justify-center hover:bg-slate-300 transition-all cursor-pointer"><i data-lucide="x" size="20"></i></button>
                 </div>
                 <div class="flex-1 overflow-y-auto p-8">
                     <table class="w-full border-collapse">
-                        <thead><tr class="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b text-center"><th class="py-4 px-2 text-left">整理番号</th><th class="py-4 px-2 text-left">被保険者氏名</th><th class="py-4 px-2 text-right">標準額(健保)</th><th class="py-4 px-2 text-right">標準額(厚年)</th><th class="py-4 px-2 text-right text-blue-600 bg-blue-50/50">健康保険料</th><th class="py-4 px-2 text-right text-indigo-600 bg-indigo-50/50">厚生年金保険料</th><th class="py-4 px-2 text-right text-emerald-600 bg-emerald-50/50">介護保険料</th><th class="py-4 px-2 text-right bg-slate-900 text-white rounded-t-xl">合計負担分</th></tr></thead>
+                        <thead><tr class="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b text-center"><th class="py-4 px-2 text-left">整理番号</th><th class="py-4 px-2 text-left">氏名</th><th class="py-4 px-2">年齢</th><th class="py-4 px-2 text-right">標準額(健保)</th><th class="py-4 px-2 text-right">標準額(厚年)</th><th class="py-4 px-2 text-right text-blue-600 bg-blue-50/50">健康保険料</th><th class="py-4 px-2 text-right text-indigo-600 bg-indigo-50/50">厚生年金保険料</th><th class="py-4 px-2 text-right text-emerald-600 bg-emerald-50/50">介護保険料</th><th class="py-4 px-2 text-right bg-slate-900 text-white rounded-t-xl">合計負担分</th></tr></thead>
                         <tbody class="divide-y text-[13px]">${rows.map(row => { 
                             const res = calculateInsurance(row, state.rates); 
                             return `<tr class="hover:bg-slate-50">
                                 <td class="py-4 px-2 font-mono">${row["被保険者整理番号"] || "-"}</td>
                                 <td class="py-4 px-2 font-black">${row["被保険者氏名"] || "-"}</td>
+                                <td class="py-4 px-2 text-center font-bold">${res.age >= 0 ? `${res.age}歳` : "-"}</td>
                                 <td class="py-4 px-2 text-right font-mono">${res.hSalary.toLocaleString()} 円</td>
                                 <td class="py-4 px-2 text-right font-mono">${res.pSalary.toLocaleString()} 円</td>
                                 <td class="py-4 px-2 text-right font-mono font-bold text-blue-600 bg-blue-50/20">${res.healthEmp.toLocaleString()} 円</td>
                                 <td class="py-4 px-2 text-right font-mono font-bold text-indigo-600 bg-indigo-50/20">${res.pensionEmp.toLocaleString()} 円</td>
                                 <td class="py-4 px-2 text-right font-mono font-bold ${res.isNursingSubject ? 'text-emerald-600 bg-emerald-50/20' : 'text-slate-300 bg-slate-100/50'}">
-                                    ${res.isNursingSubject ? `${res.nursingEmp.toLocaleString()} 円` : `<span class="text-[10px] opacity-60">対象外(${res.age >= 0 ? res.age : '?'}歳)</span>`}
+                                    ${res.isNursingSubject ? `${res.nursingEmp.toLocaleString()} 円` : `<span class="text-[10px] opacity-60">対象外</span>`}
                                 </td>
                                 <td class="py-4 px-2 text-right font-mono font-black text-white bg-slate-800">${res.totalEmp.toLocaleString()} 円</td>
                             </tr>`; 
@@ -402,7 +405,7 @@ const handleUpload = async (e: Event) => {
                     const dirName = path.split('/')[0] || "読み込みファイル";
                     if (!caseMap.has(dirName)) caseMap.set(dirName, []);
                     caseMap.get(dirName)!.push({ name, fullPath: path, content, parsed, analysis });
-                } catch (err) { addLog(`解析失敗: ${name} - ${err}`); }
+                } catch (err) { console.error(`解析失敗: ${name}`, err); }
             };
             if (f.name.endsWith('.zip')) {
                 const zip = new JSZip();
@@ -419,7 +422,7 @@ const handleUpload = async (e: Event) => {
         }
         state.cases = Array.from(caseMap.entries()).map(([name, files]) => ({ folderName: name, folderPath: name, files, isOpen: true }));
         if (state.cases.length > 0) { state.selectedCaseIdx = 0; state.selectedFileIdx = 0; }
-    } catch (err) { addLog(`エラー: ${err}`); } finally { state.isLoading = false; render(); }
+    } catch (err) { console.error(`エラー:`, err); } finally { state.isLoading = false; render(); }
 };
 
 const render = () => {
@@ -443,7 +446,7 @@ const render = () => {
                 <aside class="w-80 bg-white border-r flex flex-col overflow-hidden"><div class="p-5 border-b bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">Case Files</div><div class="flex-1 overflow-y-auto p-3 space-y-2">${state.cases.map((c, cIdx) => `<div><button class="w-full flex items-center gap-2 p-3 font-bold text-slate-700 text-sm hover:bg-slate-50 rounded-lg toggle-case-btn cursor-pointer" data-index="${cIdx}"><i data-lucide="${c.isOpen ? 'chevron-down' : 'chevron-right'}" size="14"></i><span class="truncate">${c.folderName}</span></button>${c.isOpen ? c.files.map((f, fIdx) => `<button class="w-full text-left ml-5 p-3 text-xs font-bold rounded-lg mt-1 select-file-btn cursor-pointer ${cIdx === state.selectedCaseIdx && fIdx === state.selectedFileIdx ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:bg-blue-50'}" data-case="${cIdx}" data-file="${fIdx}">${f.name}</button>`).join('') : ''}</div>`).join('')}</div></aside>
                 <main class="flex-1 bg-slate-200 overflow-y-auto p-4 md:p-10 flex flex-col items-center relative">
                     <div class="mb-6 flex bg-white p-1.5 rounded-2xl shadow-lg sticky top-0 z-10 no-print"><button id="viewSummaryBtn" class="px-8 py-3 rounded-xl text-xs font-black transition-all cursor-pointer ${state.viewMode === 'summary' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-50'}">通知書表示</button><button id="viewTreeBtn" class="px-8 py-3 rounded-xl text-xs font-black transition-all cursor-pointer ${state.viewMode === 'tree' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-50'}">データ構造</button></div>
-                    ${state.viewMode === 'summary' && data && (data.isStandardNotice || data.isBonusNotice) ? `<div class="w-full max-w-[1000px] mb-6 flex justify-between items-center bg-blue-50 border border-blue-200 p-4 rounded-2xl shadow-sm no-print"><div class="flex items-center gap-3"><div class="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center text-white"><i data-lucide="zap" size="20"></i></div><div><p class="text-xs font-black text-blue-900">業務支援ツール</p><p class="text-[10px] text-blue-600">CSV出力や保険料計算が可能です</p></div></div><div class="flex gap-2"><button id="printBtn" class="bg-white border border-blue-200 text-blue-600 px-4 py-2 rounded-xl text-[11px] font-black hover:bg-blue-100 transition-all cursor-pointer">PDF印刷</button><button id="calcMenuBtn" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-[11px] font-black hover:bg-blue-700 shadow-md transition-all cursor-pointer">保険料シミュレーション</button></div></div>` : ''}
+                    ${state.viewMode === 'summary' && data && (data.isStandardNotice || data.isBonusNotice) ? `<div class="w-full max-w-[1000px] mb-6 flex justify-between items-center bg-blue-50 border border-blue-200 p-4 rounded-2xl shadow-sm no-print"><div class="flex items-center gap-3"><div class="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center text-white"><i data-lucide="zap" size="20"></i></div><div><p class="text-xs font-black text-blue-900">業務支援ツール</p><p class="text-[10px] text-blue-600">CSV出力や保険料計算が可能です</p></div></div><div class="flex gap-2"><button id="printBtn" class="bg-white border border-blue-200 text-blue-600 px-4 py-2 rounded-xl text-[11px] font-black hover:bg-blue-100 transition-all cursor-pointer flex items-center gap-2"><i data-lucide="printer" size="14"></i>PDF印刷</button><button id="mainToCsvBtn" class="bg-white border border-blue-200 text-blue-600 px-4 py-2 rounded-xl text-[11px] font-black hover:bg-blue-100 transition-all cursor-pointer flex items-center gap-2"><i data-lucide="file-down" size="14"></i>CSV出力</button><button id="calcMenuBtn" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-[11px] font-black hover:bg-blue-700 shadow-md transition-all cursor-pointer">保険料シミュレーション</button></div></div>` : ''}
                     <div class="print-container">${state.viewMode === 'summary' && data ? renderDocument(data) : (currentFile ? renderTree(currentFile.parsed!) : '')}</div>
                 </main>
             </div>
@@ -468,14 +471,16 @@ const attachEvents = () => {
     document.getElementById('closeCalcBtn')?.addEventListener('click', () => { state.showCalcResults = false; render(); });
     document.getElementById('closeCalcBtnBottom')?.addEventListener('click', () => { state.showCalcResults = false; render(); });
     
-    // CSV出力ボタンのイベントリスナー（確実に現在の解析データを参照するよう修正）
+    // メイン画面のCSV出力ボタン
+    document.getElementById('mainToCsvBtn')?.addEventListener('click', () => { 
+        const currentFile = state.cases[state.selectedCaseIdx]?.files[state.selectedFileIdx];
+        if (currentFile?.analysis) exportToCSV(currentFile.analysis);
+    });
+
+    // シミュレーション画面内のCSV出力ボタン
     document.getElementById('calcToCsvBtn')?.addEventListener('click', () => { 
         const currentFile = state.cases[state.selectedCaseIdx]?.files[state.selectedFileIdx];
-        if (currentFile?.analysis) {
-            exportCalcToCSV(currentFile.analysis);
-        } else {
-            alert("データが見つかりません。");
-        }
+        if (currentFile?.analysis) exportToCSV(currentFile.analysis);
     });
 
     document.querySelectorAll('.toggle-case-btn').forEach(btn => btn.addEventListener('click', (e) => { const idx = parseInt((e.currentTarget as HTMLElement).dataset.index!); state.cases[idx].isOpen = !state.cases[idx].isOpen; render(); }));
