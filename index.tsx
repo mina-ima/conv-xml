@@ -1,7 +1,21 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
-// Import shared types from the types module
-import { XMLNode, AnalysisResult } from "./types";
+
+// --- Types (整合性のために内部に定義) ---
+interface XMLNode {
+    name: string;
+    attributes: Record<string, string>;
+    content?: string;
+    children: XMLNode[];
+}
+
+interface AnalysisResult {
+    title: string;
+    summary: string;
+    tableData?: {
+        headers: string[];
+        rows: string[][];
+    };
+}
 
 // --- App State ---
 const state = {
@@ -49,13 +63,13 @@ const parseXML = (xmlString: string): XMLNode => {
 
 // --- Gemini Service ---
 const analyzeXML = async (xmlString: string): Promise<AnalysisResult> => {
-    // Fix: Use process.env.API_KEY directly as per guidelines
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    // process.env.API_KEY はプラットフォームによって注入されます
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
     const contentSnippet = xmlString.length > 300000 ? xmlString.substring(0, 300000) + "..." : xmlString;
 
     const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
-        contents: `Extract social insurance data from this e-Gov XML. Return JSON: {title: string, tableData: {headers: string[], rows: string[][]}}. XML: ${contentSnippet}`,
+        contents: `e-Govの通知書XMLからデータを抽出してください。JSON形式で出力してください: {title: string, tableData: {headers: string[], rows: string[][]}}。XML: ${contentSnippet}`,
         config: {
             responseMimeType: "application/json",
             responseSchema: {
@@ -75,8 +89,11 @@ const analyzeXML = async (xmlString: string): Promise<AnalysisResult> => {
             }
         }
     });
-    // Fix: response.text is a property, not a function
-    return JSON.parse(response.text || '{}');
+    
+    // response.text はプロパティとしてアクセスします
+    const text = response.text;
+    if (!text) throw new Error("AIからの応答が空でした。");
+    return JSON.parse(text);
 };
 
 // --- Calculator ---
@@ -91,7 +108,6 @@ const calculatePremiums = () => {
         const healthAmount = parseInt(row[hIdx]?.replace(/[^0-9]/g, '') || '0') * (row[hIdx]?.includes('千円') ? 1000 : 1);
         const pensionAmount = parseInt(row[pIdx]?.replace(/[^0-9]/g, '') || '0') * (row[pIdx]?.includes('千円') ? 1000 : 1);
         
-        // 年齢推定（簡易）
         const birthStr = row[bIdx] || "";
         const isNursing = birthStr.includes("S") || birthStr.includes("19") || (birthStr.includes("H") && parseInt(birthStr.replace(/[^0-9]/g, '')) < 10);
 
@@ -120,7 +136,7 @@ const render = () => {
                     </div>
                     <h2 class="text-3xl font-extrabold mb-4 text-slate-800">XMLを読み込む</h2>
                     <p class="text-slate-500 mb-10 leading-relaxed font-medium">e-Govの通知書XMLを選択してください。</p>
-                    <label class="block w-full py-5 px-8 bg-blue-600 hover:bg-blue-700 text-white font-bold text-lg rounded-2xl cursor-pointer transition-all shadow-lg">
+                    <label class="block w-full py-5 px-8 bg-blue-600 hover:bg-blue-700 text-white font-bold text-lg rounded-2xl cursor-pointer transition-all shadow-lg active:scale-95">
                         ファイルを選択
                         <input type="file" id="fileInput" class="hidden" accept=".xml" />
                     </label>
@@ -173,19 +189,19 @@ const render = () => {
                         <div class="bg-white rounded-[2.5rem] shadow-xl border overflow-hidden">
                             <div class="p-8 border-b bg-slate-50/50 flex justify-between items-center">
                                 <h2 class="text-2xl font-black">${state.analysis.title}</h2>
-                                <button id="downloadCsv" class="px-6 py-3 bg-slate-800 text-white rounded-xl text-sm font-bold">CSV保存</button>
+                                <button id="downloadCsv" class="px-6 py-3 bg-slate-800 text-white rounded-xl text-sm font-bold hover:bg-slate-900 transition-colors">CSV保存</button>
                             </div>
                             <div class="overflow-x-auto">
                                 <table class="w-full text-left">
                                     <thead class="bg-slate-50">
                                         <tr>
-                                            ${state.analysis.tableData?.headers.map(h => `<th class="p-5 text-[11px] font-black text-slate-400 uppercase border-b">${h}</th>`).join('')}
-                                            <th class="p-5 text-[11px] font-black text-blue-600 uppercase border-b text-right">本人負担合計</th>
+                                            ${state.analysis.tableData?.headers.map(h => `<th class="p-5 text-[11px] font-black text-slate-400 uppercase border-b tracking-wider">${h}</th>`).join('')}
+                                            <th class="p-5 text-[11px] font-black text-blue-600 uppercase border-b text-right tracking-wider">本人負担合計</th>
                                         </tr>
                                     </thead>
-                                    <tbody class="divide-y">
+                                    <tbody class="divide-y divide-slate-100">
                                         ${results.map(r => `
-                                            <tr class="hover:bg-blue-50/10">
+                                            <tr class="hover:bg-blue-50/10 transition-colors">
                                                 ${r.original.map(cell => `<td class="p-5 text-sm text-slate-700">${cell}</td>`).join('')}
                                                 <td class="p-5 text-sm font-bold text-right text-blue-700">¥${r.total.toLocaleString()}</td>
                                             </tr>
@@ -212,7 +228,7 @@ const render = () => {
 
 const renderTree = (node: XMLNode): string => {
     return `
-        <div class="xml-node">
+        <div class="xml-node my-1">
             <span class="text-blue-400 font-bold">&lt;${node.name}&gt;</span>
             ${Object.entries(node.attributes).map(([k, v]) => `<span class="text-xs text-slate-500 ml-2">${k}="${v}"</span>`).join('')}
             ${node.content ? `<span class="text-white ml-2">${node.content}</span>` : ''}
@@ -237,7 +253,8 @@ const handleFile = (e: Event) => {
         try {
             state.analysis = await analyzeXML(text);
         } catch (err) {
-            console.error(err);
+            console.error("AI Analysis Error:", err);
+            alert("AI解析に失敗しました。ファイルの内容は「構造」タブで確認できます。");
         } finally {
             state.isLoading = false;
             render();
@@ -247,22 +264,32 @@ const handleFile = (e: Event) => {
 };
 
 const attachEvents = () => {
-    document.getElementById('resetBtn')?.addEventListener('click', () => { state.xmlContent = null; render(); });
+    document.getElementById('resetBtn')?.addEventListener('click', () => { 
+        state.xmlContent = null; 
+        state.analysis = null;
+        state.parsedNode = null;
+        render(); 
+    });
     document.getElementById('toggleSettings')?.addEventListener('click', () => { state.showSettings = !state.showSettings; render(); });
     document.getElementById('viewSummary')?.addEventListener('click', () => { state.viewMode = 'summary'; render(); });
     document.getElementById('viewTree')?.addEventListener('click', () => { state.viewMode = 'tree'; render(); });
+    
     document.querySelectorAll('.rate-input').forEach(input => {
         input.addEventListener('change', (e) => {
-            const key = (e.target as HTMLInputElement).dataset.key as 'health' | 'pension' | 'nursing';
-            state.rates[key] = parseFloat((e.target as HTMLInputElement).value);
+            const el = e.target as HTMLInputElement;
+            const key = el.dataset.key as 'health' | 'pension' | 'nursing';
+            state.rates[key] = parseFloat(el.value);
             render();
         });
     });
+
     document.getElementById('downloadCsv')?.addEventListener('click', () => {
         if (!state.analysis?.tableData) return;
         const results = calculatePremiums();
-        const csv = results.map(r => [...r.original, r.total].join(',')).join('\n');
-        const blob = new Blob(["\uFEFF" + csv], { type: 'text/csv' });
+        const headers = [...state.analysis.tableData.headers, "本人負担合計"].join(',');
+        const rows = results.map(r => [...r.original, r.total].join(',')).join('\n');
+        const csv = "\uFEFF" + headers + "\n" + rows;
+        const blob = new Blob([csv], { type: 'text/csv' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         a.download = 'calc_results.csv';
@@ -270,5 +297,10 @@ const attachEvents = () => {
     });
 };
 
-// 実行開始
+// 起動直後に初回描画
+document.addEventListener('DOMContentLoaded', () => {
+    render();
+});
+
+// 万が一 DOMContentLoaded がすでに発生している場合のために即時実行
 render();

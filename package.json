@@ -1,9 +1,10 @@
+
 {
   "name": "egov-xml-calculator-vanilla",
   "private": true,
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
-    "@google/genai": "0.21.0"
+    "@google/genai": "^0.21.0"
   }
 }
