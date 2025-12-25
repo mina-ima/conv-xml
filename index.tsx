@@ -31,7 +31,7 @@ interface AppFile {
 // --- App State ---
 const state = {
     files: [] as AppFile[],
-    selectedFileIndex: -1, // -1 means no file selected (show picker)
+    selectedFileIndex: -1, 
     viewMode: 'summary' as 'summary' | 'tree',
     showSettings: false,
     isLoading: false,
@@ -73,7 +73,6 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
             if (n.content) headers[path + n.name] = n.content;
             return;
         }
-
         const counts: Record<string, number> = {};
         n.children.forEach(c => counts[c.name] = (counts[c.name] || 0) + 1);
         const listTag = Object.keys(counts).find(tag => counts[tag] > 1);
@@ -93,19 +92,12 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
                 flatten(item);
                 return row;
             });
-
-            sections.push({
-                name: n.name,
-                isTable: true,
-                headers: Array.from(tableHeaders),
-                data: rows
-            });
+            sections.push({ name: n.name, isTable: true, headers: Array.from(tableHeaders), data: rows });
             n.children.filter(c => c.name !== listTag).forEach(c => processNode(c, n.name + "_"));
         } else {
             n.children.forEach(c => processNode(c, path + n.name + "_"));
         }
     };
-
     processNode(node);
     return { title: node.name, headers, sections };
 };
@@ -113,10 +105,8 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
 const calculateIfPossible = (data: UniversalData) => {
     const section = data.sections.find(s => s.isTable);
     if (!section || !section.headers) return null;
-
     const hIdx = section.headers.findIndex(h => ["健保", "健康保険", "標準額", "標準報酬", "賞与額"].some(k => h.includes(k)));
     if (hIdx === -1) return null;
-
     const pIdx = section.headers.findIndex(h => ["厚年", "厚生年金"].some(k => h.includes(k)));
     const bIdx = section.headers.findIndex(h => ["生年月日", "生年"].some(k => h.includes(k)));
 
@@ -132,7 +122,6 @@ const calculateIfPossible = (data: UniversalData) => {
         const pensionAmount = pIdx !== -1 ? parseValue(row[section.headers![pIdx]]) : 0;
         const birthStr = bIdx !== -1 ? String(row[section.headers![bIdx]]) : "";
         const isNursing = birthStr.includes("S") || birthStr.includes("19") || (birthStr.includes("H") && parseInt(birthStr.replace(/[^0-9]/g, '')) < 10);
-
         const healthP = Math.floor((healthAmount * (state.rates.health / 100)) / 2);
         const pensionP = Math.floor((pensionAmount * (state.rates.pension / 100)) / 2);
         const nursingP = isNursing ? Math.floor((healthAmount * (state.rates.nursing / 100)) / 2) : 0;
@@ -145,20 +134,16 @@ const render = () => {
     if (!root) return;
 
     if (state.files.length === 0) {
-        // --- Upload Screen ---
         root.innerHTML = `
-            <div class="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-6">
-                <div class="bg-white p-12 rounded-[3.5rem] shadow-2xl border border-slate-200 w-full max-w-2xl text-center">
-                    <div class="bg-slate-900 w-24 h-24 rounded-3xl flex items-center justify-center mx-auto mb-10 text-white shadow-xl rotate-3">
-                        <i data-lucide="folder-archive" size="48"></i>
+            <div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">
+                <div class="bg-white p-10 rounded-2xl shadow-lg border border-slate-200 w-full max-w-lg text-center">
+                    <div class="bg-slate-900 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6 text-white">
+                        <i data-lucide="upload" size="32"></i>
                     </div>
-                    <h2 class="text-4xl font-black mb-6 text-slate-900 tracking-tight">e-Gov ZIP / XML Reader</h2>
-                    <p class="text-slate-500 mb-12 text-lg font-medium leading-relaxed">
-                        e-GovからダウンロードしたZIPファイル、またはXMLファイルを読み込みます。<br>
-                        複数の書類が含まれている場合も、選択して閲覧可能です。
-                    </p>
-                    <label class="group relative block w-full py-6 px-10 bg-blue-600 hover:bg-blue-700 text-white font-black text-xl rounded-2xl cursor-pointer transition-all shadow-xl active:scale-95">
-                        <span class="flex items-center justify-center gap-3"><i data-lucide="upload-cloud"></i> ファイルを選択 (ZIP/XML)</span>
+                    <h2 class="text-2xl font-bold mb-2 text-slate-800 tracking-tight">e-Gov XML Viewer</h2>
+                    <p class="text-slate-500 mb-8 text-sm">ZIPまたはXMLファイルを選択してください。</p>
+                    <label class="block w-full py-4 px-6 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl cursor-pointer transition-all active:scale-95">
+                        ファイルを選択
                         <input type="file" id="fileInput" class="hidden" accept=".xml,.zip" />
                     </label>
                 </div>
@@ -166,111 +151,108 @@ const render = () => {
         `;
         document.getElementById('fileInput')?.addEventListener('change', handleFile);
     } else if (state.selectedFileIndex === -1) {
-        // --- File Selection List (Picker) ---
         root.innerHTML = `
-            <div class="min-h-screen bg-slate-50 flex flex-col p-8">
-                <header class="max-w-5xl mx-auto w-full mb-12 flex justify-between items-center">
-                    <div>
-                        <h2 class="text-3xl font-black text-slate-900">書類の選択</h2>
-                        <p class="text-slate-500 font-bold">ZIPファイル内に ${state.files.length} つのXMLファイルが見つかりました。</p>
-                    </div>
-                    <button id="resetBtn" class="bg-white text-slate-600 px-6 py-3 rounded-2xl font-black shadow-sm border hover:bg-slate-50 transition-all">別のZIPを選択</button>
-                </header>
-                <div class="max-w-5xl mx-auto w-full grid grid-cols-1 md:grid-cols-2 gap-6">
-                    ${state.files.map((file, index) => `
-                        <div class="bg-white p-8 rounded-[2.5rem] shadow-xl border border-slate-200 hover:border-blue-500 hover:shadow-2xl transition-all cursor-pointer group select-file-btn" data-index="${index}">
-                            <div class="flex items-start gap-5">
-                                <div class="bg-slate-100 p-4 rounded-2xl text-slate-400 group-hover:bg-blue-50 group-hover:text-blue-600 transition-colors">
-                                    <i data-lucide="file-text" size="32"></i>
-                                </div>
-                                <div class="flex-1">
-                                    <h3 class="text-xl font-black text-slate-800 mb-1 break-all">${file.name}</h3>
-                                    <p class="text-sm font-bold text-slate-400 uppercase tracking-widest">${file.analysis?.title || '書類名称不明'}</p>
-                                    <div class="mt-6 flex items-center text-blue-600 font-black text-sm">
-                                        内容を表示する <i data-lucide="arrow-right" size="16" class="ml-2"></i>
-                                    </div>
-                                </div>
-                            </div>
+            <div class="min-h-screen bg-slate-50 flex flex-col items-center py-12 px-4">
+                <div class="w-full max-w-3xl">
+                    <div class="flex items-center justify-between mb-8">
+                        <div>
+                            <h2 class="text-xl font-bold text-slate-900">含まれる書類一覧</h2>
+                            <p class="text-xs text-slate-500 font-medium">読み込む書類を選択してください (${state.files.length}件)</p>
                         </div>
-                    `).join('')}
+                        <button id="resetBtn" class="text-xs bg-white text-slate-600 px-4 py-2 rounded-lg font-bold border hover:bg-slate-50">別のZIPを選択</button>
+                    </div>
+                    <div class="space-y-3">
+                        ${state.files.map((file, index) => `
+                            <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200 hover:border-blue-500 transition-all cursor-pointer flex items-center gap-4 select-file-btn" data-index="${index}">
+                                <div class="bg-slate-100 p-2 rounded-lg text-slate-400"><i data-lucide="file-text" size="20"></i></div>
+                                <div class="flex-1 min-w-0">
+                                    <h3 class="text-sm font-bold text-slate-800 truncate">${file.name}</h3>
+                                    <p class="text-[10px] text-slate-400 font-black uppercase tracking-wider">${file.analysis?.title || 'Unknown'}</p>
+                                </div>
+                                <i data-lucide="chevron-right" size="18" class="text-slate-300"></i>
+                            </div>
+                        `).join('')}
+                    </div>
                 </div>
             </div>
         `;
         attachPickerEvents();
     } else {
-        // --- Document View ---
         const currentFile = state.files[state.selectedFileIndex];
         const analysis = currentFile.analysis;
         const calculations = analysis ? calculateIfPossible(analysis) : null;
 
         root.innerHTML = `
-            <div class="min-h-screen flex flex-col bg-[#f8fafc]">
-                <header class="bg-white border-b border-slate-200 px-8 py-4 sticky top-0 z-50 flex items-center justify-between shadow-sm">
-                    <div class="flex items-center gap-4 cursor-pointer" id="backToPicker">
-                        <div class="bg-slate-900 p-2 rounded-lg text-white"><i data-lucide="arrow-left" size="18"></i></div>
-                        <div>
-                            <h1 class="text-sm font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Back to list</h1>
-                            <span class="text-lg font-black tracking-tighter">e-Gov Universal Viewer</span>
-                        </div>
+            <div class="min-h-screen flex flex-col bg-white">
+                <header class="bg-slate-900 text-white px-6 py-3 flex items-center justify-between sticky top-0 z-50">
+                    <div class="flex items-center gap-4">
+                        <button id="backToPicker" class="hover:bg-white/10 p-1.5 rounded-lg transition-colors"><i data-lucide="chevron-left" size="20"></i></button>
+                        <h1 class="text-sm font-bold tracking-tight truncate max-w-[200px] md:max-w-none">${currentFile.name}</h1>
                     </div>
-                    <div class="flex items-center gap-3">
+                    <div class="flex items-center gap-2">
                         ${state.files.length > 1 ? `
-                            <select id="fileSelector" class="bg-slate-100 border-none rounded-xl px-4 py-2 text-sm font-bold text-slate-700 outline-none">
-                                ${state.files.map((f, i) => `<option value="${i}" ${i === state.selectedFileIndex ? 'selected' : ''}>${f.name}</option>`).join('')}
+                            <select id="fileSelector" class="bg-white/10 border-none rounded-lg px-3 py-1.5 text-xs font-bold text-white outline-none focus:bg-white/20">
+                                ${state.files.map((f, i) => `<option value="${i}" ${i === state.selectedFileIndex ? 'selected' : ''} class="text-slate-900">${f.name}</option>`).join('')}
                             </select>
                         ` : ''}
-                        <button id="toggleSettings" class="px-4 py-2 rounded-xl text-sm font-bold border ${state.showSettings ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-200'}">
-                            <i data-lucide="settings" size="16" class="inline mr-1"></i>計算設定
-                        </button>
+                        <button id="toggleSettings" class="p-2 hover:bg-white/10 rounded-lg transition-colors"><i data-lucide="settings" size="18"></i></button>
                     </div>
                 </header>
-                <main class="flex-1 max-w-[1400px] w-full mx-auto p-8">
+
+                <main class="flex-1 p-4 md:p-6 max-w-[1600px] mx-auto w-full">
                     ${state.showSettings ? `
-                        <div class="mb-8 p-8 bg-white rounded-3xl shadow-xl border border-blue-100 grid grid-cols-1 md:grid-cols-3 gap-6 animate-in slide-in-from-top-2">
+                        <div class="mb-6 p-4 bg-slate-50 rounded-xl border border-slate-200 grid grid-cols-1 md:grid-cols-3 gap-4 animate-in fade-in duration-200">
                             ${Object.entries(state.rates).map(([k, v]) => `
                                 <div>
-                                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${k === 'health' ? '健康保険' : k === 'pension' ? '厚生年金' : '介護保険'} (%)</label>
-                                    <input type="number" step="0.001" value="${v}" data-key="${k}" class="rate-input w-full p-4 bg-slate-50 border rounded-xl font-mono font-bold" />
+                                    <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1">${k === 'health' ? '健康' : k === 'pension' ? '年金' : '介護'}料率 (%)</label>
+                                    <input type="number" step="0.01" value="${v}" data-key="${k}" class="rate-input w-full p-2 bg-white border border-slate-200 rounded text-sm font-bold" />
                                 </div>
                             `).join('')}
                         </div>
                     ` : ''}
+
                     ${state.viewMode === 'summary' && analysis ? `
-                        <div class="space-y-8">
-                            <div class="bg-white rounded-[2.5rem] shadow-xl border border-slate-200 overflow-hidden">
-                                <div class="bg-slate-900 p-8 text-white flex items-center justify-between">
-                                    <div><h2 class="text-2xl font-black">${analysis.title}</h2></div>
-                                    <div class="bg-white/10 px-4 py-2 rounded-xl text-xs font-bold">${currentFile.name}</div>
-                                </div>
-                                <div class="p-8 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 bg-slate-50/50">
+                        <div class="space-y-6">
+                            <!-- Compact Header Grid -->
+                            <div class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                                <div class="bg-slate-50 px-4 py-2 border-b"><h2 class="text-xs font-black text-slate-500 uppercase tracking-widest">共通情報 / ${analysis.title}</h2></div>
+                                <div class="p-4 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-x-6 gap-y-3">
                                     ${Object.entries(analysis.headers).map(([k, v]) => `
-                                        <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
-                                            <p class="text-[9px] font-black text-slate-400 uppercase tracking-tighter mb-1">${k.replace(/_/g, ' ')}</p>
-                                            <p class="text-sm font-bold text-slate-800 break-all">${v}</p>
+                                        <div>
+                                            <p class="text-[9px] font-bold text-slate-400 uppercase truncate">${k.replace(/.*_/, '')}</p>
+                                            <p class="text-xs font-bold text-slate-800 break-all">${v}</p>
                                         </div>
                                     `).join('')}
-                                    ${Object.keys(analysis.headers).length === 0 ? '<p class="col-span-full text-slate-400 italic text-sm">共通情報は検出されませんでした。</p>' : ''}
+                                    ${Object.keys(analysis.headers).length === 0 ? '<p class="col-span-full text-slate-400 italic text-[10px]">共通情報は検出されませんでした。</p>' : ''}
                                 </div>
                             </div>
+
+                            <!-- List Sections -->
                             ${analysis.sections.map((section, sIdx) => `
-                                <div class="bg-white rounded-[2.5rem] shadow-xl border border-slate-200 overflow-hidden">
-                                    <div class="p-6 border-b bg-slate-50/30 flex items-center gap-3">
-                                        <div class="w-1.5 h-6 bg-blue-600 rounded-full"></div>
-                                        <h3 class="text-lg font-black text-slate-800">${section.name} リスト</h3>
+                                <div class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                                    <div class="bg-slate-50 px-4 py-2 border-b flex items-center justify-between">
+                                        <h3 class="text-xs font-black text-slate-500 uppercase tracking-widest">${section.name} リスト</h3>
+                                        <span class="text-[10px] bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full font-bold">${section.data.length}件</span>
                                     </div>
                                     <div class="overflow-x-auto">
-                                        <table class="w-full text-left whitespace-nowrap">
-                                            <thead class="bg-slate-50">
+                                        <table class="w-full text-left whitespace-nowrap table-fixed min-w-[800px]">
+                                            <thead class="bg-slate-50/50">
                                                 <tr>
-                                                    ${section.headers?.map(h => `<th class="p-4 text-[10px] font-black text-slate-400 uppercase tracking-tighter border-b">${h.replace(/.*_/, '')}</th>`).join('')}
-                                                    ${calculations && section.isTable ? `<th class="p-4 text-[10px] font-black text-blue-600 border-b text-right">本人負担額</th>` : ''}
+                                                    <th class="w-12 p-3 text-[10px] font-bold text-slate-400 border-b text-center">No</th>
+                                                    ${section.headers?.map(h => `<th class="p-3 text-[10px] font-bold text-slate-400 border-b uppercase">${h.replace(/.*_/, '')}</th>`).join('')}
+                                                    ${calculations && section.isTable ? `<th class="w-32 p-3 text-[10px] font-bold text-blue-600 border-b text-right bg-blue-50/30">概算本人負担</th>` : ''}
                                                 </tr>
                                             </thead>
                                             <tbody class="divide-y divide-slate-100">
                                                 ${section.data.map((row, rIdx) => `
-                                                    <tr class="hover:bg-blue-50/10 transition-colors">
-                                                        ${section.headers?.map(h => `<td class="p-4 text-sm font-medium text-slate-600">${row[h] || '-'}</td>`).join('')}
-                                                        ${calculations && section.isTable ? `<td class="p-4 text-sm font-black text-right text-blue-700 bg-blue-50/10">¥${calculations[rIdx]?.toLocaleString()}</td>` : ''}
+                                                    <tr class="hover:bg-slate-50 transition-colors">
+                                                        <td class="p-3 text-[10px] font-bold text-slate-300 text-center">${rIdx + 1}</td>
+                                                        ${section.headers?.map(h => `<td class="p-3 text-xs font-medium text-slate-700 truncate">${row[h] || '-'}</td>`).join('')}
+                                                        ${calculations && section.isTable ? `
+                                                            <td class="p-3 text-xs font-bold text-right text-blue-600 bg-blue-50/20">
+                                                                ¥${calculations[rIdx]?.toLocaleString()}
+                                                            </td>
+                                                        ` : ''}
                                                     </tr>
                                                 `).join('')}
                                             </tbody>
@@ -278,18 +260,18 @@ const render = () => {
                                     </div>
                                 </div>
                             `).join('')}
-                            ${analysis.sections.length === 0 ? '<div class="text-center py-20 bg-white rounded-[2.5rem] border-2 border-dashed border-slate-200 text-slate-400 font-bold">明細データは検出されませんでした。</div>' : ''}
                         </div>
                     ` : `
-                        <div class="bg-slate-900 p-10 rounded-[3rem] shadow-2xl overflow-auto text-blue-200 font-mono text-xs max-h-[80vh]">
+                        <div class="bg-slate-900 p-6 rounded-xl shadow-inner overflow-auto text-blue-300 font-mono text-[11px] h-[calc(100vh-140px)] border border-slate-800">
                             ${currentFile.parsed ? renderTree(currentFile.parsed) : 'No data'}
                         </div>
                     `}
                 </main>
-                <div class="fixed bottom-8 right-8 flex gap-2">
-                    <button id="viewSummary" class="px-6 py-3 rounded-2xl font-black text-sm shadow-2xl transition-all ${state.viewMode === 'summary' ? 'bg-blue-600 text-white scale-110' : 'bg-white text-slate-600'}">帳票表示</button>
-                    <button id="viewTree" class="px-6 py-3 rounded-2xl font-black text-sm shadow-2xl transition-all ${state.viewMode === 'tree' ? 'bg-blue-600 text-white scale-110' : 'bg-white text-slate-600'}">Raw構造</button>
-                </div>
+
+                <footer class="bg-slate-50 border-t border-slate-200 p-2 flex justify-center gap-1 fixed bottom-0 left-0 right-0">
+                    <button id="viewSummary" class="px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${state.viewMode === 'summary' ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-200'}">書類表示</button>
+                    <button id="viewTree" class="px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${state.viewMode === 'tree' ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-200'}">Raw構造</button>
+                </footer>
             </div>
         `;
         attachEvents();
@@ -299,11 +281,11 @@ const render = () => {
 
 const renderTree = (node: XMLNode): string => {
     return `
-        <div class="xml-node my-1">
-            <span class="text-indigo-400">&lt;${node.name}&gt;</span>
-            ${node.content ? `<span class="text-white ml-2">${node.content}</span>` : ''}
+        <div class="xml-node my-0.5">
+            <span class="text-indigo-400 opacity-60">&lt;${node.name}&gt;</span>
+            ${node.content ? `<span class="text-white ml-1 font-bold">${node.content}</span>` : ''}
             <div>${node.children.map(c => renderTree(c)).join('')}</div>
-            <span class="text-indigo-400">&lt;/${node.name}&gt;</span>
+            <span class="text-indigo-400 opacity-60">&lt;/${node.name}&gt;</span>
         </div>
     `;
 };
@@ -330,12 +312,12 @@ const handleFile = async (e: Event) => {
             const content = await file.text();
             const parsed = parseXML(content);
             state.files.push({ name: file.name, content, parsed, analysis: extractUniversalData(parsed) });
-            state.selectedFileIndex = 0; // Only one file, select it directly
+            state.selectedFileIndex = 0;
         }
         if (state.files.length === 0) alert("XMLファイルが見つかりませんでした。");
         else if (state.files.length === 1) state.selectedFileIndex = 0;
     } catch (err) {
-        alert("エラーが発生しました。");
+        alert("ファイルの解析に失敗しました。");
     } finally {
         state.isLoading = false;
         render();
@@ -355,16 +337,21 @@ const attachPickerEvents = () => {
 
 const attachEvents = () => {
     document.getElementById('backToPicker')?.addEventListener('click', () => { 
-        if (state.files.length > 1) {
-            state.selectedFileIndex = -1; 
-        } else {
-            state.files = [];
-        }
+        state.selectedFileIndex = -1; 
         render(); 
     });
-    document.getElementById('toggleSettings')?.addEventListener('click', () => { state.showSettings = !state.showSettings; render(); });
-    document.getElementById('viewSummary')?.addEventListener('click', () => { state.viewMode = 'summary'; render(); });
-    document.getElementById('viewTree')?.addEventListener('click', () => { state.viewMode = 'tree'; render(); });
+    document.getElementById('toggleSettings')?.addEventListener('click', () => { 
+        state.showSettings = !state.showSettings; 
+        render(); 
+    });
+    document.getElementById('viewSummary')?.addEventListener('click', () => { 
+        state.viewMode = 'summary'; 
+        render(); 
+    });
+    document.getElementById('viewTree')?.addEventListener('click', () => { 
+        state.viewMode = 'tree'; 
+        render(); 
+    });
     document.getElementById('fileSelector')?.addEventListener('change', (e) => {
         state.selectedFileIndex = parseInt((e.target as HTMLSelectElement).value);
         render();
