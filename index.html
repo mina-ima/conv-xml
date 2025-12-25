@@ -4,10 +4,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>e-Gov XML Reader & 保険料計算機</title>
+    <title>e-Gov XML Viewer & Assistant</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
-    <!-- Lucide Icons (CDN経由でグローバルに使用) -->
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         body { font-family: 'Inter', 'Noto Sans JP', sans-serif; }
@@ -15,25 +14,19 @@
         ::-webkit-scrollbar-track { background: #f1f5f9; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .spin { animation: spin 1s linear infinite; }
         .xml-node { margin-left: 1rem; border-left: 1px solid #e2e8f0; padding-left: 0.5rem; }
     </style>
     <script type="importmap">
     {
       "imports": {
-        "@google/genai": "https://esm.sh/@google/genai@latest"
+        "@google/genai": "https://esm.sh/@google/genai@latest",
+        "jszip": "https://esm.sh/jszip@3.10.1"
       }
     }
     </script>
 </head>
 <body class="bg-[#f8fafc] text-slate-900">
-    <div id="root">
-        <div class="flex flex-col items-center justify-center h-screen gap-4 text-slate-500">
-            <div class="w-10 h-10 border-4 border-slate-200 border-t-blue-600 rounded-full spin"></div>
-            <p class="font-bold text-slate-600">システムを起動しています...</p>
-        </div>
-    </div>
+    <div id="root"></div>
     <script type="module" src="./index.tsx"></script>
 </body>
 </html>

@@ -1,5 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
+import JSZip from "jszip";
 
 // --- Types ---
 interface XMLNode {
@@ -9,36 +10,39 @@ interface XMLNode {
     children: XMLNode[];
 }
 
-interface AnalysisResult {
+interface UniversalData {
     title: string;
-    commonInfo: Record<string, string>;
-    tableData?: {
-        headers: string[];
-        rows: string[][];
-    };
+    headers: Record<string, string>;
+    sections: {
+        name: string;
+        isTable: boolean;
+        data: any[]; // Rows for table, or nested objects
+        headers?: string[];
+    }[];
+}
+
+interface AppFile {
+    name: string;
+    content: string;
+    parsed?: XMLNode;
+    analysis?: UniversalData;
 }
 
 // --- App State ---
 const state = {
-    xmlContent: null as string | null,
-    parsedNode: null as XMLNode | null,
-    analysis: null as AnalysisResult | null,
-    isLoading: false,
+    files: [] as AppFile[],
+    selectedFileIndex: 0,
     viewMode: 'summary' as 'summary' | 'tree',
     showSettings: false,
-    rates: {
-        health: 9.98,
-        pension: 18.3,
-        nursing: 1.60
-    }
+    isLoading: false,
+    rates: { health: 9.98, pension: 18.3, nursing: 1.60 }
 };
 
-// --- XML Parser (Core) ---
+// --- XML Utilities ---
 const parseXML = (xmlString: string): XMLNode => {
     const parser = new DOMParser();
     const xmlDoc = parser.parseFromString(xmlString, "text/xml");
-    const parseError = xmlDoc.getElementsByTagName("parsererror");
-    if (parseError.length > 0) throw new Error("XMLの解析に失敗しました。");
+    if (xmlDoc.getElementsByTagName("parsererror").length > 0) throw new Error("Invalid XML");
 
     const traverse = (element: Element): XMLNode => {
         const attributes: Record<string, string> = {};
@@ -48,9 +52,7 @@ const parseXML = (xmlString: string): XMLNode => {
         }
         const children: XMLNode[] = [];
         Array.from(element.childNodes).forEach(child => {
-            if (child.nodeType === Node.ELEMENT_NODE) {
-                children.push(traverse(child as Element));
-            }
+            if (child.nodeType === Node.ELEMENT_NODE) children.push(traverse(child as Element));
         });
         return { 
             name: element.tagName, 
@@ -63,283 +65,218 @@ const parseXML = (xmlString: string): XMLNode => {
 };
 
 /**
- * e-GovのXMLから共通情報と明細情報を分離して抽出する
+ * 汎用的なデータ抽出エンジン
+ * 全ての情報を「ヘッダー」か「セクション（表含む）」に分類する
  */
-const localExtractData = (node: XMLNode): AnalysisResult => {
-    const commonInfo: Record<string, string> = {};
-    let bestRows: any[] = [];
-    let bestHeaderSet = new Set<string>();
-    let maxTableScore = 0;
+const extractUniversalData = (node: XMLNode): UniversalData => {
+    const headers: Record<string, string> = {};
+    const sections: UniversalData['sections'] = [];
 
-    // 1. 全てのノードを走査して、全項目の出現頻度を記録
-    const allLeaves: Record<string, string[]> = {};
-    const collectAll = (n: XMLNode) => {
-        if (n.children.length === 0 && n.content) {
-            if (!allLeaves[n.name]) allLeaves[n.name] = [];
-            allLeaves[n.name].push(n.content);
+    const processNode = (n: XMLNode, path: string = "") => {
+        if (n.children.length === 0) {
+            if (n.content) headers[path + n.name] = n.content;
+            return;
         }
-        n.children.forEach(collectAll);
+
+        // 子要素の出現頻度を確認して「リスト（表）」を特定
+        const counts: Record<string, number> = {};
+        n.children.forEach(c => counts[c.name] = (counts[c.name] || 0) + 1);
+
+        const listTag = Object.keys(counts).find(tag => counts[tag] > 1);
+
+        if (listTag) {
+            const items = n.children.filter(c => c.name === listTag);
+            const tableHeaders = new Set<string>();
+            const rows = items.map(item => {
+                const row: Record<string, string> = {};
+                const flatten = (cn: XMLNode, prefix = "") => {
+                    if (cn.children.length === 0) {
+                        const key = prefix + cn.name;
+                        row[key] = cn.content || "";
+                        tableHeaders.add(key);
+                    } else cn.children.forEach(child => flatten(child, cn.name + "_"));
+                };
+                flatten(item);
+                return row;
+            });
+
+            sections.push({
+                name: n.name,
+                isTable: true,
+                headers: Array.from(tableHeaders),
+                data: rows
+            });
+
+            // リスト以外の兄弟要素も処理
+            n.children.filter(c => c.name !== listTag).forEach(c => processNode(c, n.name + "_"));
+        } else {
+            // 単発要素の集合
+            n.children.forEach(c => processNode(c, path + n.name + "_"));
+        }
     };
-    collectAll(node);
 
-    // 2. 表（明細）となる部分を特定（複数回繰り返されるタグを優先）
-    const findTable = (n: XMLNode) => {
-        if (n.children.length >= 1) {
-            const counts: Record<string, number> = {};
-            n.children.forEach(c => { counts[c.name] = (counts[c.name] || 0) + 1; });
-
-            for (const [tagName, count] of Object.entries(counts)) {
-                // 1回以上出現するものを候補とするが、複数回を優先的に評価
-                const currentRows: any[] = [];
-                const currentHeaderSet = new Set<string>();
-                const targets = n.children.filter(c => c.name === tagName);
-
-                targets.forEach(record => {
-                    const rowData: Record<string, string> = {};
-                    const flatten = (fn: XMLNode, prefix = "") => {
-                        if (fn.children.length === 0) {
-                            const key = prefix + fn.name;
-                            rowData[key] = fn.content || "";
-                            currentHeaderSet.add(key);
-                        } else {
-                            fn.children.forEach(c => flatten(c, fn.name + "_"));
-                        }
-                    };
-                    flatten(record);
-                    if (Object.keys(rowData).length > 0) currentRows.push(rowData);
-                });
-
-                // スコア計算：行数 × 項目数
-                const score = currentRows.length * currentHeaderSet.size;
-                if (score > maxTableScore) {
-                    maxTableScore = score;
-                    bestRows = currentRows;
-                    bestHeaderSet = currentHeaderSet;
-                }
-            }
-        }
-        n.children.forEach(findTable);
-    };
-    findTable(node);
-
-    // 3. 表に含まれない、1回しか出てこない項目を「共通情報」とする
-    for (const [key, values] of Object.entries(allLeaves)) {
-        if (values.length === 1 && !bestHeaderSet.has(key)) {
-            // 長すぎる値やタイトルっぽいものは除外して共通情報へ
-            if (values[0].length < 100) {
-                commonInfo[key] = values[0];
-            }
-        }
-    }
-
-    const headers = Array.from(bestHeaderSet);
-    const formattedRows = bestRows.map(r => headers.map(h => r[h] || ""));
-
-    // タイトルの決定（XMLタグ名や共通情報から推測）
-    let title = "e-Gov 通知書";
-    if (node.name.includes("通知書")) title = node.name;
-    const possibleTitles = ["タイトル", "帳票名", "DocumentTitle"];
-    for(const t of possibleTitles) if(commonInfo[t]) { title = commonInfo[t]; delete commonInfo[t]; }
+    processNode(node);
 
     return {
-        title,
-        commonInfo,
-        tableData: {
-            headers: headers.map(h => h.replace(/.*_/, "")), // 表示用にネストを解消
-            rows: formattedRows
-        }
+        title: node.name,
+        headers,
+        sections
     };
 };
 
-// --- Premium Calculator ---
-const calculatePremiums = () => {
-    if (!state.analysis?.tableData) return [];
-    const { headers, rows } = state.analysis.tableData;
-    
-    // キーワードによるカラムの特定
-    const findIdx = (keywords: string[]) => headers.findIndex(h => keywords.some(k => h.includes(k)));
-    
-    const hIdx = findIdx(["健保", "健康保険", "標準額", "標準報酬", "賞与額"]);
-    const pIdx = findIdx(["厚年", "厚生年金"]);
-    const bIdx = findIdx(["生年月日", "生年"]);
+// --- Premium Calculation Logic ---
+const calculateIfPossible = (data: UniversalData) => {
+    const section = data.sections.find(s => s.isTable);
+    if (!section || !section.headers) return null;
 
-    return rows.map(row => {
-        const parseValue = (val: string) => {
+    const hIdx = section.headers.findIndex(h => ["健保", "健康保険", "標準額", "標準報酬", "賞与額"].some(k => h.includes(k)));
+    if (hIdx === -1) return null;
+
+    const pIdx = section.headers.findIndex(h => ["厚年", "厚生年金"].some(k => h.includes(k)));
+    const bIdx = section.headers.findIndex(h => ["生年月日", "生年"].some(k => h.includes(k)));
+
+    return section.data.map(row => {
+        const parseValue = (val: any) => {
             if (!val) return 0;
-            let num = parseInt(val.replace(/[^0-9]/g, '')) || 0;
-            if (val.includes('千円')) num *= 1000;
+            const str = String(val);
+            let num = parseInt(str.replace(/[^0-9]/g, '')) || 0;
+            if (str.includes('千円')) num *= 1000;
             return num;
         };
-
-        const healthAmount = parseValue(row[hIdx]);
-        const pensionAmount = parseValue(row[pIdx]);
-        
-        const birthStr = row[bIdx] || "";
-        // 40歳以上介護保険対象判定
+        const healthAmount = parseValue(row[section.headers![hIdx]]);
+        const pensionAmount = pIdx !== -1 ? parseValue(row[section.headers![pIdx]]) : 0;
+        const birthStr = bIdx !== -1 ? String(row[section.headers![bIdx]]) : "";
         const isNursing = birthStr.includes("S") || birthStr.includes("19") || (birthStr.includes("H") && parseInt(birthStr.replace(/[^0-9]/g, '')) < 10);
 
-        const healthPremium = Math.floor((healthAmount * (state.rates.health / 100)) / 2);
-        const pensionPremium = Math.floor((pensionAmount * (state.rates.pension / 100)) / 2);
-        const nursingPremium = isNursing ? Math.floor((healthAmount * (state.rates.nursing / 100)) / 2) : 0;
-        
-        return {
-            original: row,
-            total: healthPremium + pensionPremium + nursingPremium
-        };
+        const healthP = Math.floor((healthAmount * (state.rates.health / 100)) / 2);
+        const pensionP = Math.floor((pensionAmount * (state.rates.pension / 100)) / 2);
+        const nursingP = isNursing ? Math.floor((healthAmount * (state.rates.nursing / 100)) / 2) : 0;
+        return healthP + pensionP + nursingP;
     });
 };
 
-// --- UI Renderer ---
+// --- Renderer ---
 const render = () => {
     const root = document.getElementById('root');
     if (!root) return;
 
-    if (!state.xmlContent) {
+    if (state.files.length === 0) {
         root.innerHTML = `
-            <div class="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-4">
+            <div class="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-6">
                 <div class="bg-white p-12 rounded-[3.5rem] shadow-2xl border border-slate-200 w-full max-w-2xl text-center">
-                    <div class="bg-gradient-to-br from-blue-600 to-indigo-700 w-24 h-24 rounded-[2.2rem] flex items-center justify-center mx-auto mb-10 text-white shadow-xl rotate-3">
-                        <i data-lucide="file-digit" size="48"></i>
+                    <div class="bg-slate-900 w-24 h-24 rounded-3xl flex items-center justify-center mx-auto mb-10 text-white shadow-xl rotate-3">
+                        <i data-lucide="folder-archive" size="48"></i>
                     </div>
-                    <h2 class="text-4xl font-black mb-6 text-slate-900 tracking-tight">e-Gov XML 閲覧・計算</h2>
-                    <p class="text-slate-500 mb-12 text-lg font-medium leading-relaxed px-4">
-                        ダウンロードした通知書XMLを読み込みます。<br>
-                        共通情報を自動抽出し、保険料の本人負担額を即座に計算します。
+                    <h2 class="text-4xl font-black mb-6 text-slate-900 tracking-tight">e-Gov ZIP / XML Reader</h2>
+                    <p class="text-slate-500 mb-12 text-lg font-medium leading-relaxed">
+                        e-GovのZIPファイル、またはXMLファイルをアップロードしてください。<br>
+                        中身を解析し、情報を漏れなく表示します。
                     </p>
-                    <label class="group relative block w-full py-6 px-10 bg-slate-900 hover:bg-blue-600 text-white font-black text-xl rounded-2xl cursor-pointer transition-all shadow-2xl active:scale-95 overflow-hidden">
-                        <span class="relative z-10 flex items-center justify-center gap-3">
-                            <i data-lucide="upload" size="24"></i>
-                            ファイルを選択する
-                        </span>
-                        <div class="absolute inset-0 bg-gradient-to-r from-blue-600 to-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                        <input type="file" id="fileInput" class="hidden" accept=".xml" />
+                    <label class="group relative block w-full py-6 px-10 bg-blue-600 hover:bg-blue-700 text-white font-black text-xl rounded-2xl cursor-pointer transition-all shadow-xl active:scale-95">
+                        <span class="flex items-center justify-center gap-3"><i data-lucide="upload-cloud"></i> ファイルを選択 (ZIP/XML)</span>
+                        <input type="file" id="fileInput" class="hidden" accept=".xml,.zip" />
                     </label>
-                    <p class="mt-8 text-xs text-slate-400 font-bold uppercase tracking-widest">Supports Standard Bonus & Remuneration XML</p>
                 </div>
             </div>
         `;
         document.getElementById('fileInput')?.addEventListener('change', handleFile);
     } else {
-        const results = calculatePremiums();
+        const currentFile = state.files[state.selectedFileIndex];
+        const analysis = currentFile.analysis;
+        const calculations = analysis ? calculateIfPossible(analysis) : null;
+
         root.innerHTML = `
-            <div class="min-h-screen flex flex-col bg-[#fdfdfd]">
-                <header class="bg-white/80 backdrop-blur-md border-b border-slate-100 px-8 py-5 sticky top-0 z-50">
-                    <div class="max-w-[1400px] mx-auto flex items-center justify-between">
-                        <div class="flex items-center gap-4 cursor-pointer group" id="resetBtn">
-                            <div class="bg-slate-900 p-2.5 rounded-xl text-white group-hover:bg-blue-600 transition-colors shadow-lg">
-                                <i data-lucide="chevron-left" size="20"></i>
-                            </div>
-                            <div>
-                                <h1 class="text-xl font-black tracking-tighter text-slate-900">e-Gov XML Reader</h1>
-                                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Professional Version</p>
-                            </div>
-                        </div>
-                        <div class="flex items-center gap-4">
-                            <button id="toggleSettings" class="px-5 py-2.5 rounded-xl text-sm font-black border transition-all ${state.showSettings ? 'bg-blue-600 text-white border-blue-600 shadow-blue-200 shadow-lg' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400 shadow-sm'}">
-                                <i data-lucide="percent" size="16" class="inline mr-2"></i>料率設定
-                            </button>
-                            <div class="h-6 w-px bg-slate-200"></div>
-                            <div class="flex gap-1 bg-slate-100 p-1.5 rounded-2xl">
-                                <button id="viewSummary" class="px-6 py-2 rounded-xl text-xs font-black transition-all ${state.viewMode === 'summary' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500 hover:text-slate-800'}">帳票表示</button>
-                                <button id="viewTree" class="px-6 py-2 rounded-xl text-xs font-black transition-all ${state.viewMode === 'tree' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500 hover:text-slate-800'}">構造確認</button>
-                            </div>
-                        </div>
+            <div class="min-h-screen flex flex-col bg-[#f8fafc]">
+                <header class="bg-white border-b border-slate-200 px-8 py-4 sticky top-0 z-50 flex items-center justify-between shadow-sm">
+                    <div class="flex items-center gap-4 cursor-pointer" id="resetBtn">
+                        <div class="bg-slate-900 p-2 rounded-lg text-white"><i data-lucide="home" size="18"></i></div>
+                        <h1 class="text-lg font-black tracking-tighter">e-Gov Universal Viewer</h1>
+                    </div>
+                    
+                    <div class="flex items-center gap-3">
+                        ${state.files.length > 1 ? `
+                            <select id="fileSelector" class="bg-slate-100 border-none rounded-xl px-4 py-2 text-sm font-bold text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none">
+                                ${state.files.map((f, i) => `<option value="${i}" ${i === state.selectedFileIndex ? 'selected' : ''}>${f.name}</option>`).join('')}
+                            </select>
+                        ` : ''}
+                        <button id="toggleSettings" class="px-4 py-2 rounded-xl text-sm font-bold border ${state.showSettings ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-200'}">
+                            <i data-lucide="settings" size="16" class="inline mr-1"></i>計算設定
+                        </button>
                     </div>
                 </header>
 
-                <main class="flex-1 max-w-[1400px] w-full mx-auto p-10">
+                <main class="flex-1 max-w-[1400px] w-full mx-auto p-8">
                     ${state.showSettings ? `
-                        <div class="mb-12 p-10 bg-white rounded-[2rem] border-2 border-blue-50 shadow-2xl animate-in zoom-in-95 duration-300">
-                            <div class="flex items-center gap-3 mb-8">
-                                <div class="w-2 h-8 bg-blue-600 rounded-full"></div>
-                                <h3 class="text-xl font-black text-slate-900">健康保険・厚生年金保険料率設定</h3>
-                            </div>
-                            <div class="grid grid-cols-1 md:grid-cols-3 gap-10">
-                                ${Object.entries(state.rates).map(([key, val]) => `
-                                    <div class="space-y-3">
-                                        <label class="block text-xs font-black text-slate-400 uppercase tracking-widest ml-1">
-                                            ${key === 'health' ? '健康保険 (%)' : key === 'pension' ? '厚生年金 (%)' : '介護保険 (%)'}
-                                        </label>
-                                        <div class="relative">
-                                            <input type="number" step="0.001" value="${val}" data-key="${key}" class="rate-input w-full p-5 bg-slate-50 border-2 border-transparent focus:border-blue-500 focus:bg-white rounded-2xl font-mono text-2xl font-black text-slate-900 outline-none transition-all" />
-                                            <span class="absolute right-5 top-1/2 -translate-y-1/2 text-slate-300 font-black text-xl">%</span>
-                                        </div>
-                                    </div>
-                                `).join('')}
-                            </div>
-                            <p class="mt-6 text-[11px] font-bold text-slate-400 bg-slate-50 p-4 rounded-xl">※各料率を1/2した額（本人負担分）として計算します。設定値は保存されません。</p>
+                        <div class="mb-8 p-8 bg-white rounded-3xl shadow-xl border border-blue-100 grid grid-cols-1 md:grid-cols-3 gap-6 animate-in slide-in-from-top-2">
+                            ${Object.entries(state.rates).map(([k, v]) => `
+                                <div>
+                                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${k === 'health' ? '健康保険' : k === 'pension' ? '厚生年金' : '介護保険'} (%)</label>
+                                    <input type="number" step="0.001" value="${v}" data-key="${k}" class="rate-input w-full p-4 bg-slate-50 border rounded-xl font-mono font-bold" />
+                                </div>
+                            `).join('')}
                         </div>
                     ` : ''}
 
-                    ${state.viewMode === 'summary' ? `
-                        <div class="bg-white rounded-[3rem] shadow-2xl border border-slate-100 overflow-hidden">
-                            <!-- Title Area -->
-                            <div class="p-12 text-center border-b border-slate-50">
-                                <h2 class="text-3xl font-black text-slate-900 mb-2">${state.analysis?.title || '通知書'}</h2>
-                                <div class="w-24 h-1.5 bg-blue-600 mx-auto rounded-full"></div>
-                            </div>
-
-                            <!-- Common Info Cards (固定項目をここに表示) -->
-                            <div class="p-8 bg-slate-50/50 border-b border-slate-100 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
-                                ${Object.entries(state.analysis?.commonInfo || {}).map(([key, val]) => `
-                                    <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
-                                        <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">${key}</p>
-                                        <p class="text-base font-bold text-slate-800">${val}</p>
+                    ${state.viewMode === 'summary' && analysis ? `
+                        <div class="space-y-8">
+                            <!-- Document Header Card -->
+                            <div class="bg-white rounded-[2.5rem] shadow-xl border border-slate-200 overflow-hidden">
+                                <div class="bg-slate-900 p-8 text-white flex items-center justify-between">
+                                    <div>
+                                        <p class="text-[10px] font-black opacity-50 uppercase tracking-widest mb-1">Document Type</p>
+                                        <h2 class="text-2xl font-black">${analysis.title}</h2>
                                     </div>
-                                `).join('')}
-                                ${Object.keys(state.analysis?.commonInfo || {}).length === 0 ? '<p class="col-span-full text-center text-slate-400 text-sm italic py-4">共通情報は検出されませんでした。</p>' : ''}
-                            </div>
-
-                            <!-- Table Area (明細のみを表示) -->
-                            <div class="overflow-x-auto">
-                                <table class="w-full text-left whitespace-nowrap">
-                                    <thead>
-                                        <tr class="bg-slate-900 text-white">
-                                            ${state.analysis?.tableData?.headers.map(h => `
-                                                <th class="p-6 text-[11px] font-black uppercase tracking-widest">${h}</th>
-                                            `).join('') || ''}
-                                            <th class="p-6 text-[11px] font-black uppercase tracking-widest bg-blue-600 text-right sticky right-0">概算本人負担額</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody class="divide-y divide-slate-100">
-                                        ${results.map(r => `
-                                            <tr class="hover:bg-blue-50/10 transition-colors group">
-                                                ${r.original.map(cell => `<td class="p-6 text-sm text-slate-700 font-bold group-hover:text-blue-700 transition-colors">${cell}</td>`).join('')}
-                                                <td class="p-6 text-lg font-black text-right text-blue-700 bg-blue-50/30 sticky right-0 backdrop-blur-sm">
-                                                    <span class="text-xs mr-1 text-blue-400">¥</span>${r.total.toLocaleString()}
-                                                </td>
-                                            </tr>
-                                        `).join('')}
-                                        ${results.length === 0 ? '<tr><td colspan="100" class="p-32 text-center text-slate-400 font-black text-xl italic">明細データが見つかりませんでした。</td></tr>' : ''}
-                                    </tbody>
-                                </table>
-                            </div>
-
-                            <div class="p-10 bg-slate-900 flex justify-between items-center text-white">
-                                <div>
-                                    <p class="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] mb-1">Row Count</p>
-                                    <p class="text-2xl font-black">${results.length} 名分のデータ</p>
+                                    <div class="bg-white/10 px-4 py-2 rounded-xl text-xs font-bold">${currentFile.name}</div>
                                 </div>
-                                <button id="downloadCsv" class="group px-8 py-4 bg-blue-600 hover:bg-white hover:text-blue-600 text-white rounded-2xl font-black transition-all shadow-xl flex items-center gap-3 active:scale-95">
-                                    <i data-lucide="download" size="20"></i>
-                                    CSVとして保存
-                                </button>
+                                <div class="p-8 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-6 bg-slate-50/50">
+                                    ${Object.entries(analysis.headers).map(([k, v]) => `
+                                        <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                                            <p class="text-[9px] font-black text-slate-400 uppercase tracking-tighter mb-1">${k.replace(/_/g, ' ')}</p>
+                                            <p class="text-sm font-bold text-slate-800 break-all">${v}</p>
+                                        </div>
+                                    `).join('')}
+                                </div>
                             </div>
+
+                            <!-- Repeatable Sections -->
+                            ${analysis.sections.map((section, sIdx) => `
+                                <div class="bg-white rounded-[2.5rem] shadow-xl border border-slate-200 overflow-hidden">
+                                    <div class="p-6 border-b flex items-center gap-3">
+                                        <div class="w-1.5 h-6 bg-blue-600 rounded-full"></div>
+                                        <h3 class="text-lg font-black text-slate-800">${section.name} リスト</h3>
+                                    </div>
+                                    <div class="overflow-x-auto">
+                                        <table class="w-full text-left whitespace-nowrap">
+                                            <thead class="bg-slate-50">
+                                                <tr>
+                                                    ${section.headers?.map(h => `<th class="p-4 text-[10px] font-black text-slate-400 uppercase tracking-tighter border-b">${h.replace(/.*_/, '')}</th>`).join('')}
+                                                    ${calculations && section.isTable ? `<th class="p-4 text-[10px] font-black text-blue-600 uppercase border-b text-right">概算本人負担</th>` : ''}
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y divide-slate-100">
+                                                ${section.data.map((row, rIdx) => `
+                                                    <tr class="hover:bg-blue-50/20 transition-colors">
+                                                        ${section.headers?.map(h => `<td class="p-4 text-sm font-medium text-slate-600">${row[h] || '-'}</td>`).join('')}
+                                                        ${calculations && section.isTable ? `<td class="p-4 text-sm font-black text-right text-blue-700 bg-blue-50/10">¥${calculations[rIdx]?.toLocaleString()}</td>` : ''}
+                                                    </tr>
+                                                `).join('')}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            `).join('')}
                         </div>
                     ` : `
-                        <div class="bg-slate-900 p-12 rounded-[3rem] shadow-2xl overflow-auto text-blue-200 font-mono text-sm max-h-[80vh] border-8 border-slate-800">
-                            <div class="mb-6 flex items-center gap-2 text-slate-500">
-                                <i data-lucide="code" size="16"></i>
-                                <span class="text-xs font-black uppercase tracking-widest">XML Structural Tree View</span>
-                            </div>
-                            ${state.parsedNode ? renderTree(state.parsedNode) : ''}
+                        <div class="bg-slate-900 p-10 rounded-[3rem] shadow-2xl overflow-auto text-blue-200 font-mono text-xs max-h-[80vh] border-8 border-slate-800">
+                            ${currentFile.parsed ? renderTree(currentFile.parsed) : 'No data parsed'}
                         </div>
                     `}
                 </main>
 
-                <footer class="py-10 text-center text-slate-400 text-[10px] font-black uppercase tracking-[0.5em]">
-                    e-Gov XML Document Parser & Premium Calculator
-                </footer>
+                <div class="fixed bottom-8 right-8 flex gap-2">
+                    <button id="viewSummary" class="px-6 py-3 rounded-2xl font-black text-sm shadow-2xl transition-all ${state.viewMode === 'summary' ? 'bg-blue-600 text-white scale-110' : 'bg-white text-slate-600'}">書類表示</button>
+                    <button id="viewTree" class="px-6 py-3 rounded-2xl font-black text-sm shadow-2xl transition-all ${state.viewMode === 'tree' ? 'bg-blue-600 text-white scale-110' : 'bg-white text-slate-600'}">Raw構造</button>
+                </div>
             </div>
         `;
         attachEvents();
@@ -349,47 +286,60 @@ const render = () => {
 
 const renderTree = (node: XMLNode): string => {
     return `
-        <div class="xml-node my-1 border-l-2 border-slate-800 pl-4 py-1">
-            <span class="text-indigo-400 font-bold opacity-80">&lt;${node.name}</span>
-            ${Object.entries(node.attributes).map(([k, v]) => `<span class="text-xs text-slate-600 ml-2 italic">${k}="${v}"</span>`).join('')}
-            <span class="text-indigo-400 font-bold opacity-80">&gt;</span>
-            ${node.content ? `<span class="text-white mx-2 font-sans">${node.content}</span>` : ''}
+        <div class="xml-node my-1 border-l border-slate-800 pl-4">
+            <span class="text-indigo-400">&lt;${node.name}&gt;</span>
+            ${node.content ? `<span class="text-white ml-2">${node.content}</span>` : ''}
             <div>${node.children.map(c => renderTree(c)).join('')}</div>
-            <span class="text-indigo-400 font-bold opacity-40">&lt;/${node.name}&gt;</span>
+            <span class="text-indigo-400">&lt;/${node.name}&gt;</span>
         </div>
     `;
 };
 
-const handleFile = (e: Event) => {
+const handleFile = async (e: Event) => {
     const file = (e.target as HTMLInputElement).files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-        const text = ev.target?.result as string;
-        state.xmlContent = text;
-        try {
-            state.parsedNode = parseXML(text);
-            state.analysis = localExtractData(state.parsedNode);
-            render();
-        } catch (err) {
-            alert("XMLの解析に失敗しました。ファイル形式を確認してください。");
+    state.files = [];
+    state.isLoading = true;
+    render();
+
+    try {
+        if (file.name.endsWith('.zip')) {
+            const zip = await JSZip.loadAsync(file);
+            for (const filename of Object.keys(zip.files)) {
+                if (filename.endsWith('.xml')) {
+                    const content = await zip.files[filename].async('string');
+                    const parsed = parseXML(content);
+                    state.files.push({ name: filename, content, parsed, analysis: extractUniversalData(parsed) });
+                }
+            }
+        } else if (file.name.endsWith('.xml')) {
+            const content = await file.text();
+            const parsed = parseXML(content);
+            state.files.push({ name: file.name, content, parsed, analysis: extractUniversalData(parsed) });
         }
-    };
-    reader.readAsText(file);
+        
+        if (state.files.length === 0) alert("有効なXMLファイルが見つかりませんでした。");
+        state.selectedFileIndex = 0;
+    } catch (err) {
+        alert("ファイルの解析に失敗しました。");
+    } finally {
+        state.isLoading = false;
+        render();
+    }
 };
 
 const attachEvents = () => {
-    document.getElementById('resetBtn')?.addEventListener('click', () => { 
-        state.xmlContent = null; 
-        state.analysis = null;
-        state.parsedNode = null;
-        render(); 
-    });
+    document.getElementById('resetBtn')?.addEventListener('click', () => { state.files = []; render(); });
     document.getElementById('toggleSettings')?.addEventListener('click', () => { state.showSettings = !state.showSettings; render(); });
     document.getElementById('viewSummary')?.addEventListener('click', () => { state.viewMode = 'summary'; render(); });
     document.getElementById('viewTree')?.addEventListener('click', () => { state.viewMode = 'tree'; render(); });
     
+    document.getElementById('fileSelector')?.addEventListener('change', (e) => {
+        state.selectedFileIndex = parseInt((e.target as HTMLSelectElement).value);
+        render();
+    });
+
     document.querySelectorAll('.rate-input').forEach(input => {
         input.addEventListener('change', (e) => {
             const el = e.target as HTMLInputElement;
@@ -397,19 +347,6 @@ const attachEvents = () => {
             state.rates[key] = parseFloat(el.value);
             render();
         });
-    });
-
-    document.getElementById('downloadCsv')?.addEventListener('click', () => {
-        if (!state.analysis?.tableData) return;
-        const results = calculatePremiums();
-        const headers = [...state.analysis.tableData.headers, "本人負担合計"].join(',');
-        const rows = results.map(r => [...r.original, r.total].join(',')).join('\n');
-        const csv = "\uFEFF" + headers + "\n" + rows;
-        const blob = new Blob([csv], { type: 'text/csv' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = `egov_export_${new Date().getTime()}.csv`;
-        a.click();
     });
 };
 
