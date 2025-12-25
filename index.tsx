@@ -28,6 +28,8 @@ interface UniversalData {
     docNo?: string;
     authorAff?: string;
     authorName?: string;
+    noticeBox?: string; // 機構からのお知らせ等
+    isBonusNotice?: boolean; // 標準賞与額決定通知書フラグ
     paragraphs: string[];
     appendices: Appendix[];
     officeInfo: Record<string, string>;
@@ -133,7 +135,39 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
     let paragraphs: string[] = [];
     let arrivalNumber = "", postCode = "", address = "", companyName = "", recipientName = "", creationDate = "", officeName = "";
     let docNo = "", authorAff = "", authorName = "", title = "";
+    let noticeBox = "";
+    let isBonusNotice = node.name === "N7150001" || node.children.some(c => c.name === "_被保険者");
 
+    if (isBonusNotice) {
+        // --- Special Case: Standard Bonus Notice ---
+        title = "健康保険・厚生年金保険標準賞与額決定通知書";
+        const rows: any[] = [];
+        node.children.forEach(c => {
+            if (c.name === "_被保険者") {
+                const row: Record<string, string> = {};
+                c.children.forEach(gc => {
+                    const name = gc.name;
+                    const val = gc.content || "";
+                    if (name === "事業所郵便番号_送付先") postCode = val;
+                    if (name === "事業所所在地_送付先") address = val;
+                    if (name === "事業所名称_送付先") companyName = val;
+                    if (name === "事業主氏名_送付先") recipientName = val;
+                    if (name === "到達番号_項目") arrivalNumber = val;
+                    if (name === "機構からのお知らせ") noticeBox = val;
+                    if (name === "通知年月日") creationDate = val;
+                    if (name === "事業所整理記号") officeInfo["事業所整理記号"] = val;
+                    if (name === "事業所番号") officeInfo["事業所番号"] = val;
+                    
+                    row[name] = val;
+                });
+                rows.push(row);
+            }
+        });
+        sections.push({ name: "被保険者データ", isTable: true, data: rows });
+        return { title, arrivalNumber, postCode, address, companyName, recipientName, creationDate, officeName, officeInfo, headers, sections, docNo, authorAff, authorName, paragraphs, appendices, noticeBox, isBonusNotice };
+    }
+
+    // --- Standard Notice / Table Processing ---
     const processNode = (n: XMLNode, path: string = "") => {
         const name = TAG_MAP[n.name] || n.name;
         const val = n.content || "";
@@ -142,7 +176,6 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
         if (n.name === "DATE") creationDate = val;
         if (n.name === "TITLE") title = val;
 
-        // TO Section
         if (n.name === "TO") {
             n.children.forEach(c => {
                 if (c.name === "AFF") companyName = c.content || "";
@@ -150,16 +183,12 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
                 if (c.name === "HONORIFC") recipientName = (recipientName ? recipientName + " " : "") + (c.content || "");
             });
         }
-
-        // AUTHOR Section
         if (n.name === "AUTHOR") {
             n.children.forEach(c => {
                 if (c.name === "AFF") authorAff = c.content || "";
                 if (c.name === "NAME") authorName = c.content || "";
             });
         }
-
-        // APPENDIX Section
         if (n.name === "APPENDIX") {
             let appTitle = "";
             let appLink = "";
@@ -169,13 +198,9 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
             });
             if (appTitle) appendices.push({ title: appTitle, link: appLink });
         }
-
-        // MAINTXT Section (Paragraphs)
         if (n.name === "MAINTXT" || n.name === "MAINTXT3") {
             n.children.forEach(c => {
-                if (c.name === "P" && c.content && c.content.trim()) {
-                    paragraphs.push(c.content.trim());
-                }
+                if (c.name === "P" && c.content && c.content.trim()) paragraphs.push(c.content.trim());
             });
         }
 
@@ -226,7 +251,7 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
         title = "健康保険・厚生年金保険 被保険者標準報酬決定通知書";
     }
 
-    return { title, arrivalNumber, postCode, address, companyName, recipientName, creationDate, officeName, officeInfo, headers, sections, docNo, authorAff, authorName, paragraphs, appendices };
+    return { title, arrivalNumber, postCode, address, companyName, recipientName, creationDate, officeName, officeInfo, headers, sections, docNo, authorAff, authorName, paragraphs, appendices, noticeBox, isBonusNotice };
 };
 
 const handleUpload = async (e: Event) => {
@@ -234,7 +259,7 @@ const handleUpload = async (e: Event) => {
     const rawFiles = Array.from(input.files || []);
     if (rawFiles.length === 0) return;
     state.isLoading = true;
-    state.loadingMsg = "通知書データを抽出しています...";
+    state.loadingMsg = "データを抽出中...";
     state.cases = [];
     render();
     const caseMap = new Map<string, AppFile[]>();
@@ -267,7 +292,7 @@ const handleUpload = async (e: Event) => {
             folderName: name, folderPath: name, files, isOpen: true
         }));
         if (state.cases.length > 0) { state.selectedCaseIdx = 0; state.selectedFileIdx = 0; }
-    } catch (err) { addLog(`処理エラー: ${err}`); } finally {
+    } catch (err) { addLog(`エラー: ${err}`); } finally {
         state.isLoading = false;
         render();
     }
@@ -345,101 +370,149 @@ const render = () => {
 };
 
 const renderDocument = (data: UniversalData) => {
-    // Determine if this is a "Notice" type or a "Table" type
+    // Determine layout based on type
+    if (data.isBonusNotice) {
+        return renderBonusNotice(data);
+    }
+    
     const isNotice = (data.paragraphs.length > 0 || data.appendices.length > 0) && data.sections.length === 0;
+    if (isNotice) return renderStandardNotice(data);
 
-    if (isNotice) {
-        // Summary Header for Notice types (①〜④ items)
-        const findOfficeVal = (pattern: RegExp) => {
-            const key = Object.keys(data.officeInfo).find(k => k.match(pattern)) || Object.keys(data.headers).find(k => k.match(pattern));
-            return key ? (data.officeInfo[key] || data.headers[key]) : "　　　　　　";
-        };
+    return renderStandardTable(data);
+};
 
-        const idInfo = findOfficeVal(/識別情報|文書番号|到達番号/);
-        const officeId = findOfficeVal(/整理記号/);
-        const officeNum = findOfficeVal(/事業所番号/);
+// --- Notice Rendering Logic (Standard Text Notice) ---
+const renderStandardNotice = (data: UniversalData) => {
+    const findOfficeVal = (pattern: RegExp) => {
+        const key = Object.keys(data.officeInfo).find(k => k.match(pattern)) || Object.keys(data.headers).find(k => k.match(pattern));
+        return key ? (data.officeInfo[key] || data.headers[key]) : "　　　　　　";
+    };
+    const idInfo = findOfficeVal(/識別情報|文書番号|到達番号/);
+    const officeId = findOfficeVal(/整理記号/);
+    const officeNum = findOfficeVal(/事業所番号/);
 
-        return `
-            <div class="bg-white shadow-2xl w-full max-w-[900px] min-h-[1200px] p-10 md:p-16 text-slate-900 rounded-sm relative mb-20 leading-relaxed font-['Noto_Sans_JP']">
-                <!-- Banner Area -->
-                <div class="flex justify-between items-start mb-8 text-[12px] font-bold">
-                    <div class="flex gap-10">
-                        <div class="space-y-0.5">
-                            <p>健康保険</p>
-                            <p>厚生年金保険</p>
-                            <p>国民年金</p>
-                        </div>
-                        <h2 class="text-[18px] self-center tracking-[0.2em]">CSV形式届書総括票</h2>
+    return `
+        <div class="bg-white shadow-2xl w-full max-w-[900px] min-h-[1200px] p-10 md:p-16 text-slate-900 rounded-sm relative mb-20 leading-relaxed font-['Noto_Sans_JP']">
+            <div class="flex justify-between items-start mb-8 text-[12px] font-bold">
+                <div class="flex gap-10">
+                    <div class="space-y-0.5"><p>健康保険</p><p>厚生年金保険</p><p>国民年金</p></div>
+                    <h2 class="text-[18px] self-center tracking-[0.2em]">CSV形式届書総括票</h2>
+                </div>
+                <div class="border border-slate-900 px-6 py-2 text-[14px]">電子申請用</div>
+            </div>
+            <div class="grid grid-cols-2 gap-y-2 mb-16 text-[13px] font-medium">
+                <div class="flex gap-4"><span>①識別情報</span><span class="flex-1 border-b border-slate-300">${idInfo}</span></div>
+                <div class="flex gap-4"><span>②作成年月日</span><span class="flex-1 border-b border-slate-300">${data.creationDate || '令和　年　月　日'}</span></div>
+                <div class="flex gap-4"><span>③事業所整理記号</span><span class="flex-1 border-b border-slate-300">${officeId}</span></div>
+                <div class="flex gap-4"><span>④事業所番号</span><span class="flex-1 border-b border-slate-300">${officeNum}</span></div>
+            </div>
+            <div class="text-right text-[15px] font-medium mb-10"><p class="mb-1">${data.docNo || ''}</p><p>${data.creationDate || ''}</p></div>
+            <div class="text-left text-[16px] font-bold mb-10 space-y-1"><p class="text-[18px]">${data.companyName || ''}</p><p class="text-[18px]">${data.recipientName || ''}</p></div>
+            <div class="text-right text-[15px] font-bold mb-16 space-y-1"><p>${data.authorAff || '日本年金機構'}</p><p>${data.authorName || '日本年金機構理事長'}</p></div>
+            <div class="text-center mb-16"><h1 class="text-xl font-black">${data.title}</h1></div>
+            <div class="space-y-6 text-[15px] mb-12 text-justify whitespace-pre-wrap">${data.paragraphs.map(p => `<p>${p}</p>`).join('')}</div>
+            ${data.appendices.length > 0 ? `<div class="space-y-2 mb-16">${data.appendices.map(app => `<div class="flex gap-2 text-blue-700 underline font-medium"><span>${app.title}</span><span class="text-slate-500 no-underline">( ${app.link || 'リンクファイル'} )</span></div>`).join('')}</div>` : ''}
+            <div class="text-[14px] space-y-4 pt-10 border-t"><p class="font-bold">【ご案内：「オンライン事業所年金情報サービス」をぜひご利用ください。】</p><p>日本年金機構では、各種情報・通知書を電子送付するサービスを提供しています。</p></div>
+        </div>
+    `;
+};
+
+// --- Bonus Notice Rendering Logic (The Requested N7150001 Format) ---
+const renderBonusNotice = (data: UniversalData) => {
+    const mainSection = data.sections.find(s => s.name === "被保険者データ");
+    const rows = mainSection?.data || [];
+    
+    return `
+        <div class="bg-white shadow-2xl w-full max-w-[900px] min-h-[1200px] p-10 md:p-16 text-slate-900 rounded-sm relative mb-20 leading-relaxed font-['Noto_Sans_JP']">
+            <!-- Header Block -->
+            <div class="flex justify-between items-start mb-8 text-[12px] font-bold">
+                <div class="space-y-1">
+                    <p>${data.postCode || ''}</p>
+                    <p>${data.address || ''}</p>
+                    <p class="text-[16px] mt-4">${data.companyName || ''}</p>
+                    <p class="text-[16px]">${data.recipientName || ''} 様</p>
+                    <div class="flex gap-10 mt-2 text-[14px] font-mono">
+                        <span>${rows[0]?.["通知管理番号"] || ''}</span>
+                        <span>${rows[0]?.["通知管理番号枝番"] || ''}</span>
                     </div>
-                    <div class="border border-slate-900 px-6 py-2 text-[14px]">電子申請用</div>
                 </div>
-
-                <!-- Summary Info Grid -->
-                <div class="grid grid-cols-2 gap-y-2 mb-16 text-[13px] font-medium">
-                    <div class="flex gap-4"><span>①識別情報</span><span class="flex-1 border-b border-slate-300">${idInfo}</span></div>
-                    <div class="flex gap-4"><span>②作成年月日</span><span class="flex-1 border-b border-slate-300">${data.creationDate || '令和　年　月　日'}</span></div>
-                    <div class="flex gap-4"><span>③事業所整理記号</span><span class="flex-1 border-b border-slate-300">${officeId}</span></div>
-                    <div class="flex gap-4"><span>④事業所番号</span><span class="flex-1 border-b border-slate-300">${officeNum}</span></div>
-                </div>
-
-                <!-- Document Body Content -->
-                <div class="text-right text-[15px] font-medium mb-10">
-                    <p class="mb-1">${data.docNo || ''}</p>
-                    <p>${data.creationDate || ''}</p>
-                </div>
-                
-                <div class="text-left text-[16px] font-bold mb-10 space-y-1">
-                    <p class="text-[18px]">${data.companyName || ''}</p>
-                    <p class="text-[18px]">${data.recipientName || ''}</p>
-                </div>
-
-                <div class="text-right text-[15px] font-bold mb-16 space-y-1">
-                    <p>${data.authorAff || '日本年金機構'}</p>
-                    <p>${data.authorName || '日本年金機構理事長'}</p>
-                </div>
-
-                <div class="text-center mb-16">
-                    <h1 class="text-xl font-black">${data.title}</h1>
-                </div>
-
-                <div class="space-y-6 text-[15px] mb-12 text-justify whitespace-pre-wrap">
-                    ${data.paragraphs.map(p => `<p>${p}</p>`).join('')}
-                </div>
-
-                <!-- Appendices (Links) -->
-                ${data.appendices.length > 0 ? `
-                    <div class="space-y-2 mb-16">
-                        ${data.appendices.map(app => `
-                            <div class="flex gap-2 text-blue-700 underline font-medium">
-                                <span>${app.title}</span>
-                                <span class="text-slate-500 no-underline">( ${app.link || 'リンクファイル'} )</span>
-                            </div>
-                        `).join('')}
-                    </div>
-                ` : ''}
-
-                <!-- Informational Text (Static Bottom Section) -->
-                <div class="text-[14px] space-y-4 pt-10">
-                    <p class="font-bold">【ご案内：「オンライン事業所年金情報サービス」をぜひご利用ください。】</p>
-                    <p>日本年金機構では、各種情報・通知書を電子送付するサービス「オンライン事業所年金情報サービス」を提供しています。紙の通知書よりも早く確認が可能で、紙の削減により環境負荷の軽減にも繋がります。ぜひこの機会にオンライン事業所年金情報サービスをご利用ください。</p>
-                    <div class="pt-6 space-y-1">
-                        <p>電子データで受け取ることができる情報・通知書は以下のとおりです。</p>
-                        <p>＜事業主の方＞</p>
-                        <ul class="list-disc ml-6 space-y-0.5">
-                            <li>保険料納入告知額・領収済額通知書（社会保険料を口座振替している事業主の方のみ）</li>
-                            <li>社会保険料額情報</li>
-                            <li>保険料増減内訳書</li>
-                            <li>基本保険料算出内訳書</li>
-                            <li>賞与保険料算出内訳書</li>
-                            <li>被保険者データ（「届書作成プログラム」に本データを取り込むことで簡単に社会保険手続きを電子申請できます）</li>
-                        </ul>
+                <div class="text-right space-y-1">
+                    <p>到達番号　${data.arrivalNumber || ''}</p>
+                    <div class="border border-slate-900 p-4 mt-4 w-[280px] h-[220px] text-left text-[11px] font-normal leading-normal whitespace-pre-wrap overflow-hidden">
+                        ${data.noticeBox || ''}
                     </div>
                 </div>
             </div>
-        `;
-    }
 
-    // Default Table View (for Standard Remuneration etc.)
+            <div class="text-center mb-10">
+                <h1 class="text-[19px] font-bold tracking-widest">${data.title}</h1>
+            </div>
+
+            <div class="mb-6 space-y-1 text-[13px] font-bold">
+                <div class="flex">
+                    <span class="w-32">事業所整理記号</span>
+                    <span>${data.officeInfo["事業所整理記号"] || ''}</span>
+                </div>
+                <div class="flex">
+                    <span class="w-32">事業所番号</span>
+                    <span>${data.officeInfo["事業所番号"] || ''}</span>
+                </div>
+            </div>
+
+            <!-- Main Table -->
+            <table class="w-full border-collapse border border-slate-900 text-[11px] font-bold mb-10">
+                <thead>
+                    <tr class="bg-slate-50">
+                        <th class="border border-slate-900 p-1 font-bold text-center w-16">被保険者<br>整理番号</th>
+                        <th class="border border-slate-900 p-1 font-bold text-center">被保険者氏名</th>
+                        <th class="border border-slate-900 p-1 font-bold text-center w-24">※1<br>賞与支払年月日</th>
+                        <th class="border border-slate-900 p-1 font-bold text-center" colspan="2">決定後の標準賞与額</th>
+                        <th class="border border-slate-900 p-1 font-bold text-center w-24">※1<br>生年月日</th>
+                        <th class="border border-slate-900 p-1 font-bold text-center w-16">※2<br>種別</th>
+                    </tr>
+                    <tr class="bg-slate-50">
+                        <th colspan="3"></th>
+                        <th class="border border-slate-900 p-0.5 text-center font-normal">(健保)</th>
+                        <th class="border border-slate-900 p-0.5 text-center font-normal">(厚年)</th>
+                        <th colspan="2"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows.map(row => `
+                        <tr>
+                            <td class="border border-slate-900 p-2 text-center">${row["被保険者整理番号"] || ''}</td>
+                            <td class="border border-slate-900 p-2 pl-4 text-[14px]">${row["被保険者氏名"] || ''}</td>
+                            <td class="border border-slate-900 p-2 text-center text-[12px]">
+                                ${row["賞与支払年月日_元号"] || ''} ${parseInt(row["賞与支払年月日_年"]) || ''}.${parseInt(row["賞与支払年月日_月"]) || ''}.${parseInt(row["賞与支払年月日_日"]) || ''}
+                            </td>
+                            <td class="border border-slate-900 p-2 text-right text-[13px] pr-4">${row["決定後の標準賞与額_健保"] || ''}</td>
+                            <td class="border border-slate-900 p-2 text-right text-[13px] pr-4">${row["決定後の標準賞与額_厚年"] || ''}</td>
+                            <td class="border border-slate-900 p-2 text-center text-[12px]">
+                                ${row["生年月日_元号"] || ''} ${parseInt(row["生年月日_年"]) || ''}.${parseInt(row["生年月日_月"]) || ''}.${parseInt(row["生年月日_日"]) || ''}
+                            </td>
+                            <td class="border border-slate-900 p-2 text-center">${row["種別"] || ''}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+
+            <!-- Footer Legends and Texts -->
+            <div class="text-[10px] space-y-2 font-medium mb-12">
+                <p>※1　元号　　S：昭和　H：平成　R：令和</p>
+                <p>※2　種別　　第一種：男性　第二種：女性　第三種：坑内員　特例第一種：男性（基金加入）　特例第二種：女性（基金加入）</p>
+                <p class="ml-14">特例第三種：坑内員（基金加入）</p>
+                <p class="text-[12px] mt-10 ml-10">上記のとおり標準賞与額が決定されたので通知します。</p>
+            </div>
+
+            <div class="text-right text-[14px] font-bold mt-10">
+                <p>${data.creationDate || ''}</p>
+            </div>
+        </div>
+    `;
+};
+
+// --- Standard Table Rendering Logic (Standard Remuneration etc.) ---
+const renderStandardTable = (data: UniversalData) => {
     const calcs = calculateHalfAmount(data);
     return `
         <div class="bg-white shadow-2xl w-full max-w-[900px] min-h-[1200px] p-24 md:p-32 text-slate-900 rounded-sm relative mb-20 font-['Noto_Sans_JP']">
@@ -457,14 +530,11 @@ const renderDocument = (data: UniversalData) => {
                     </div>
                 </div>
             </div>
-
             <div class="text-center mb-20"><h1 class="text-3xl font-black border-b-4 border-slate-900 inline-block px-10 pb-2">${data.title}</h1></div>
-
             <div class="grid grid-cols-2 gap-10 mb-10 bg-slate-50 p-8 rounded-2xl border">
                 <div><p class="text-[10px] font-black text-slate-400 mb-1 uppercase">事業所整理記号</p><p class="text-xl font-mono font-black">${data.officeInfo["事業所整理記号"] || data.headers["事業所整理記号"] || '---'}</p></div>
                 <div><p class="text-[10px] font-black text-slate-400 mb-1 uppercase">事業所番号</p><p class="text-xl font-mono font-black">${data.officeInfo["事業所番号"] || data.headers["事業所番号"] || '---'}</p></div>
             </div>
-
             ${data.sections.length > 0 ? data.sections.map((section, sIdx) => `
                 <div class="mb-10 overflow-x-auto">
                     <h3 class="text-xs font-black text-slate-400 mb-4 uppercase tracking-widest">${section.name}</h3>
@@ -497,7 +567,6 @@ const renderDocument = (data: UniversalData) => {
                     </table>
                 </div>
             `).join('') : ''}
-
             <div class="mt-40 pt-10 border-t flex justify-between items-end">
                 <div class="space-y-2">
                     <p class="text-slate-400 font-bold mb-10">${data.creationDate || ''}</p>
