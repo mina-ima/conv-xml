@@ -97,7 +97,8 @@ const parseXML = (xmlString: string): XMLNode => {
         };
     };
 
-    const root = traverse(xmlDoc.documentElement);
+    const rootElement = xmlDoc.documentElement;
+    const root = traverse(rootElement);
     root.processingInstructions = pis;
     return root;
 };
@@ -113,7 +114,6 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
         const name = n.name;
         const val = n.content || "";
 
-        // Synonym matching based on common e-Gov XML tags
         if (name.includes("到達番号") || name === "ArrivalNumber") arrivalNumber = val || arrivalNumber;
         if (name.includes("郵便番号") || name === "PostCode") postCode = val || postCode;
         if (name.includes("所在地") || name.includes("住所") || name === "Address") address = val || address;
@@ -167,31 +167,31 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
 
 const handleUpload = async (e: Event) => {
     const input = e.target as HTMLInputElement;
-    const files = Array.from(input.files || []);
-    if (files.length === 0) return;
+    const rawFiles = Array.from(input.files || []);
+    if (rawFiles.length === 0) return;
 
     state.isLoading = true;
     state.cases = [];
     state.logs = [];
-    addLog(`${files.length} 個のファイルをスキャン中...`);
+    addLog(`${rawFiles.length} 個の対象をスキャン中...`);
     render();
 
     const caseMap = new Map<string, AppFile[]>();
     const allPdfs = new Set<string>();
 
-    // Pass 1: Collect files and PDFs
-    for (const f of files) {
-        const path = (f as any).webkitRelativePath || f.name;
-        const dir = path.substring(0, path.lastIndexOf('/')) || "root";
-        if (f.name.toLowerCase().endsWith('.pdf')) allPdfs.add(path);
+    const addToFileMap = (path: string, fileName: string, content: string) => {
+        const dir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : "root";
         
-        if (f.name.toLowerCase().endsWith('.xml')) {
-            const content = await f.text();
+        if (fileName.toLowerCase().endsWith('.pdf')) {
+            allPdfs.add(path);
+            return;
+        }
+
+        if (fileName.toLowerCase().endsWith('.xml')) {
             try {
                 const parsed = parseXML(content);
                 const analysis = extractUniversalData(parsed);
                 
-                // XSL Resolution Logic
                 let detectedXsl = "";
                 const piMatch = parsed.processingInstructions.find(pi => pi.includes('href='));
                 if (piMatch) {
@@ -200,7 +200,7 @@ const handleUpload = async (e: Event) => {
                 }
                 
                 const fileEntry: AppFile = {
-                    name: f.name,
+                    name: fileName,
                     fullPath: path,
                     content,
                     parsed,
@@ -211,12 +211,31 @@ const handleUpload = async (e: Event) => {
                 if (!caseMap.has(dir)) caseMap.set(dir, []);
                 caseMap.get(dir)!.push(fileEntry);
             } catch (err) {
-                addLog(`エラー: ${f.name} の解析に失敗しました。`);
+                addLog(`エラー: ${fileName} の解析に失敗しました。`);
             }
+        }
+    };
+
+    for (const f of rawFiles) {
+        if (f.name.toLowerCase().endsWith('.zip')) {
+            try {
+                const zip = await JSZip.loadAsync(f);
+                for (const filename of Object.keys(zip.files)) {
+                    if (zip.files[filename].dir) continue;
+                    const content = await zip.files[filename].async('string');
+                    const baseName = filename.split('/').pop() || filename;
+                    addToFileMap(filename, baseName, content);
+                }
+            } catch (err) {
+                addLog(`ZIPエラー: ${f.name} を開けませんでした。`);
+            }
+        } else {
+            const path = (f as any).webkitRelativePath || f.name;
+            const content = await f.text();
+            addToFileMap(path, f.name, content);
         }
     }
 
-    // Pass 2: Finalize cases and PDF attachments
     state.cases = Array.from(caseMap.entries()).map(([dir, xmls]) => {
         xmls.forEach(xml => {
             const xmlBase = xml.fullPath.substring(0, xml.fullPath.lastIndexOf('.'));
@@ -224,7 +243,7 @@ const handleUpload = async (e: Event) => {
         });
         return {
             folderPath: dir,
-            folderName: dir === "root" ? "ルート" : dir.split('/').pop() || dir,
+            folderName: dir === "root" ? "ルート案件" : dir.split('/').pop() || dir,
             files: xmls
         };
     });
@@ -232,7 +251,7 @@ const handleUpload = async (e: Event) => {
     if (state.cases.length > 0) {
         state.selectedCaseIdx = 0;
         state.selectedFileIdx = 0;
-        addLog(`${state.cases.length} 個の案件フォルダを検出しました。`);
+        addLog(`${state.cases.length} 個のフォルダ、合計 ${state.cases.reduce((acc, c) => acc + c.files.length, 0)} 個のXMLを検出しました。`);
     } else {
         addLog("表示可能なXMLファイルが見つかりませんでした。");
     }
@@ -245,6 +264,18 @@ const render = () => {
     const root = document.getElementById('root');
     if (!root) return;
 
+    if (state.isLoading) {
+        root.innerHTML = `
+            <div class="min-h-screen flex items-center justify-center bg-slate-100 p-6">
+                <div class="text-center">
+                    <div class="animate-spin rounded-full h-16 w-16 border-b-4 border-blue-600 mx-auto mb-4"></div>
+                    <p class="text-slate-600 font-bold">ファイルを解析中...</p>
+                </div>
+            </div>
+        `;
+        return;
+    }
+
     if (state.cases.length === 0) {
         root.innerHTML = `
             <div class="min-h-screen flex items-center justify-center bg-slate-100 p-6">
@@ -254,8 +285,8 @@ const render = () => {
                     </div>
                     <h2 class="text-4xl font-black mb-4 text-slate-900 tracking-tighter">e-Gov Pro Viewer</h2>
                     <p class="text-slate-500 mb-12 text-lg font-medium leading-relaxed">
-                        ダウンロードしたフォルダごと選択してください。<br/>
-                        XML・XSL・PDFを自動的に関連付けます。
+                        通知書フォルダ、またはダウンロードしたZIPを選択してください。<br/>
+                        複数のXMLが含まれていても自動的に分類します。
                     </p>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <label class="block py-6 px-8 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-3xl cursor-pointer transition-all active:scale-95 shadow-lg group">
@@ -273,6 +304,8 @@ const render = () => {
             </div>
         `;
         document.getElementById('folderInput')?.addEventListener('change', handleUpload);
+        document.getElementById('zipInput')?.addEventListener('change', handleUpload);
+        if ((window as any).lucide) (window as any).lucide.createIcons();
         return;
     }
 
@@ -282,7 +315,6 @@ const render = () => {
 
     root.innerHTML = `
         <div class="h-screen flex flex-col bg-slate-100 overflow-hidden">
-            <!-- Header -->
             <header class="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between z-50 shadow-sm">
                 <div class="flex items-center gap-4">
                     <button id="resetBtn" class="p-2 hover:bg-slate-100 rounded-xl transition-colors text-slate-400"><i data-lucide="home" size="20"></i></button>
@@ -296,23 +328,23 @@ const render = () => {
             </header>
 
             <div class="flex-1 flex overflow-hidden">
-                <!-- Sidebar: Case/File List -->
-                <aside class="w-80 bg-white border-r border-slate-200 flex flex-col">
-                    <div class="p-4 border-b bg-slate-50">
-                        <h2 class="text-[10px] font-black text-slate-400 uppercase tracking-widest">案件フォルダ (${state.cases.length})</h2>
+                <aside class="w-80 bg-white border-r border-slate-200 flex flex-col shadow-inner">
+                    <div class="p-4 border-b bg-slate-50 flex items-center justify-between">
+                        <h2 class="text-[10px] font-black text-slate-400 uppercase tracking-widest">案件・書類リスト</h2>
                     </div>
-                    <div class="flex-1 overflow-y-auto">
+                    <div class="flex-1 overflow-y-auto custom-scrollbar">
                         ${state.cases.map((c, cIdx) => `
-                            <div class="border-b border-slate-50">
+                            <div class="border-b border-slate-100">
                                 <div class="px-4 py-3 bg-slate-50/50 flex items-center gap-2">
                                     <i data-lucide="folder" size="14" class="text-blue-500"></i>
                                     <span class="text-[11px] font-black text-slate-700 truncate">${c.folderName}</span>
+                                    <span class="ml-auto text-[9px] bg-slate-200 px-1.5 rounded-md font-bold text-slate-500">${c.files.length}</span>
                                 </div>
                                 <div class="py-1">
                                     ${c.files.map((f, fIdx) => `
-                                        <button class="w-full text-left px-8 py-3 text-xs font-bold transition-all flex items-center justify-between select-file-btn ${cIdx === state.selectedCaseIdx && fIdx === state.selectedFileIdx ? 'bg-blue-600 text-white shadow-inner' : 'hover:bg-slate-50 text-slate-500'}" data-case="${cIdx}" data-file="${fIdx}">
+                                        <button class="w-full text-left px-8 py-3 text-xs font-bold transition-all flex items-center justify-between select-file-btn ${cIdx === state.selectedCaseIdx && fIdx === state.selectedFileIdx ? 'bg-blue-600 text-white shadow-lg' : 'hover:bg-blue-50 text-slate-500'}" data-case="${cIdx}" data-file="${fIdx}">
                                             <span class="truncate pr-2">${f.name}</span>
-                                            ${f.hasPdf ? '<i data-lucide="file-check" size="12" class="opacity-50"></i>' : ''}
+                                            ${f.hasPdf ? '<i data-lucide="file-check" size="12" class="text-green-500"></i>' : ''}
                                         </button>
                                     `).join('')}
                                 </div>
@@ -321,15 +353,17 @@ const render = () => {
                     </div>
                 </aside>
 
-                <!-- Main View -->
                 <main class="flex-1 bg-slate-200 overflow-y-auto p-4 md:p-12 relative flex flex-col items-center">
+                    <div class="mb-6 flex gap-2 sticky top-0 z-10">
+                        <button id="viewSummaryBtn" class="px-6 py-2 rounded-full text-xs font-black transition-all shadow-md ${state.viewMode === 'summary' ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}">通知書表示</button>
+                        <button id="viewTreeBtn" class="px-6 py-2 rounded-full text-xs font-black transition-all shadow-md ${state.viewMode === 'tree' ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}">XMLソース</button>
+                    </div>
                     ${state.viewMode === 'summary' && data ? renderDocument(data, currentFile) : renderTree(currentFile.parsed!)}
                 </main>
             </div>
 
-            <!-- Footer: Logs -->
             <footer class="bg-slate-900 text-blue-300 px-6 py-2 h-32 border-t border-slate-800 font-mono text-[10px] overflow-y-auto">
-                <div class="flex justify-between items-center mb-2 sticky top-0 bg-slate-900 py-1">
+                <div class="flex justify-between items-center mb-2 sticky top-0 bg-slate-900 py-1 border-b border-white/5">
                     <span class="font-black text-slate-500 uppercase tracking-widest">System Logs</span>
                     <button id="clearLogs" class="text-slate-500 hover:text-white transition-colors">CLEAR</button>
                 </div>
@@ -337,7 +371,6 @@ const render = () => {
                 ${state.logs.length === 0 ? '<div class="italic opacity-30">No logs available.</div>' : ''}
             </footer>
 
-            <!-- Settings Overlay -->
             ${state.showSettings ? renderSettings() : ''}
         </div>
     `;
@@ -349,8 +382,7 @@ const render = () => {
 const renderDocument = (data: UniversalData, file: AppFile) => {
     const calculations = calculateIfPossible(data);
     return `
-        <div class="bg-white shadow-2xl w-full max-w-[900px] min-h-[1200px] p-12 md:p-20 text-slate-900 relative border border-slate-300 mb-20">
-            <!-- Header Grid -->
+        <div class="bg-white shadow-2xl w-full max-w-[900px] min-h-[1200px] p-12 md:p-20 text-slate-900 relative border border-slate-300 mb-20 animate-in fade-in duration-300">
             <div class="flex justify-between items-start mb-12">
                 <div class="text-[14px] font-bold leading-relaxed">
                     <p class="mb-1">〒${data.postCode || '--- ----'}</p>
@@ -360,7 +392,7 @@ const renderDocument = (data: UniversalData, file: AppFile) => {
                 </div>
                 <div class="text-right">
                     <p class="text-[11px] font-bold text-slate-400">到達番号 ${data.arrivalNumber || '---'}</p>
-                    ${file.detectedXsl ? `<p class="text-[9px] font-mono text-blue-400 mt-1">XSL: ${file.detectedXsl}</p>` : ''}
+                    ${file.detectedXsl ? `<p class="text-[9px] font-mono text-blue-400 mt-1">スタイル: ${file.detectedXsl}</p>` : ''}
                 </div>
             </div>
 
@@ -457,7 +489,7 @@ const renderTree = (node: XMLNode): string => {
         </div>
     `;
     return `
-        <div class="bg-slate-900 p-10 rounded-[3rem] shadow-2xl overflow-auto text-blue-200 font-mono text-[11px] w-full max-w-4xl min-h-[800px]">
+        <div class="bg-slate-900 p-10 rounded-[3rem] shadow-2xl overflow-auto text-blue-200 font-mono text-[11px] w-full max-w-4xl min-h-[800px] animate-in slide-in-from-right duration-300">
             ${traverse(node)}
         </div>
     `;
@@ -513,13 +545,15 @@ const attachEvents = () => {
     document.getElementById('toggleSettings')?.addEventListener('click', () => { state.showSettings = !state.showSettings; render(); });
     document.getElementById('closeSettings')?.addEventListener('click', () => { state.showSettings = false; render(); });
     document.getElementById('clearLogs')?.addEventListener('click', () => { state.logs = []; render(); });
+    
+    document.getElementById('viewSummaryBtn')?.addEventListener('click', () => { state.viewMode = 'summary'; render(); });
+    document.getElementById('viewTreeBtn')?.addEventListener('click', () => { state.viewMode = 'tree'; render(); });
 
     document.querySelectorAll('.select-file-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const target = e.currentTarget as HTMLElement;
             state.selectedCaseIdx = parseInt(target.dataset.case!);
             state.selectedFileIdx = parseInt(target.dataset.file!);
-            state.viewMode = 'summary';
             render();
         });
     });
