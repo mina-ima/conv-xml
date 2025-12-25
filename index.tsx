@@ -8,6 +8,7 @@ interface XMLNode {
     attributes: Record<string, string>;
     content?: string;
     children: XMLNode[];
+    processingInstructions: string[];
 }
 
 interface UniversalData {
@@ -29,29 +30,37 @@ interface UniversalData {
     }[];
 }
 
-interface AppCase {
-    id: string;
-    folderName: string;
-    xmlFiles: AppFile[];
-    pdfFiles: string[]; // URLs or Base64
-}
-
 interface AppFile {
     name: string;
+    fullPath: string;
     content: string;
     parsed?: XMLNode;
     analysis?: UniversalData;
+    detectedXsl?: string;
+    hasPdf?: boolean;
+}
+
+interface CaseEntry {
+    folderPath: string;
+    folderName: string;
+    files: AppFile[];
 }
 
 // --- App State ---
 const state = {
-    cases: [] as AppCase[],
-    selectedCaseIndex: -1,
-    selectedFileIndex: 0,
+    cases: [] as CaseEntry[],
+    selectedCaseIdx: -1,
+    selectedFileIdx: -1,
     viewMode: 'summary' as 'summary' | 'tree',
     showSettings: false,
     isLoading: false,
+    logs: [] as string[],
     rates: { health: 9.98, pension: 18.3, nursing: 1.60 }
+};
+
+const addLog = (msg: string) => {
+    state.logs.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
+    if (state.logs.length > 50) state.logs.shift();
 };
 
 // --- XML Utilities ---
@@ -60,6 +69,15 @@ const parseXML = (xmlString: string): XMLNode => {
     const xmlDoc = parser.parseFromString(xmlString, "text/xml");
     if (xmlDoc.getElementsByTagName("parsererror").length > 0) throw new Error("Invalid XML");
 
+    const pis: string[] = [];
+    let child = xmlDoc.firstChild;
+    while (child) {
+        if (child.nodeType === Node.PROCESSING_INSTRUCTION_NODE) {
+            pis.push((child as ProcessingInstruction).data);
+        }
+        child = child.nextSibling;
+    }
+
     const traverse = (element: Element): XMLNode => {
         const attributes: Record<string, string> = {};
         for (let i = 0; i < element.attributes.length; i++) {
@@ -67,56 +85,49 @@ const parseXML = (xmlString: string): XMLNode => {
             attributes[attr.name] = attr.value;
         }
         const children: XMLNode[] = [];
-        Array.from(element.childNodes).forEach(child => {
-            if (child.nodeType === Node.ELEMENT_NODE) children.push(traverse(child as Element));
+        Array.from(element.childNodes).forEach(c => {
+            if (c.nodeType === Node.ELEMENT_NODE) children.push(traverse(c as Element));
         });
         return { 
             name: element.tagName, 
             attributes, 
             content: element.children.length === 0 ? element.textContent?.trim() : undefined, 
-            children 
+            children,
+            processingInstructions: [] 
         };
     };
-    return traverse(xmlDoc.documentElement);
+
+    const root = traverse(xmlDoc.documentElement);
+    root.processingInstructions = pis;
+    return root;
 };
 
 const extractUniversalData = (node: XMLNode): UniversalData => {
     const headers: Record<string, string> = {};
     const officeInfo: Record<string, string> = {};
     const sections: UniversalData['sections'] = [];
-    let arrivalNumber = "";
-    let postCode = "";
-    let address = "";
-    let companyName = "";
-    let recipientName = "";
-    let creationDate = "";
-    let officeName = "";
-
-    const findContent = (target: string, n: XMLNode): string | null => {
-        if (n.name.includes(target)) return n.content || null;
-        for (const child of n.children) {
-            const res = findContent(target, child);
-            if (res) return res;
-        }
-        return null;
-    };
+    
+    let arrivalNumber = "", postCode = "", address = "", companyName = "", recipientName = "", creationDate = "", officeName = "";
 
     const processNode = (n: XMLNode, path: string = "") => {
-        // Deep extraction for key identity fields
-        if (n.name.includes("到達番号")) arrivalNumber = n.content || arrivalNumber;
-        if (n.name.includes("郵便番号")) postCode = n.content || postCode;
-        if (n.name.includes("所在地") || n.name.includes("事業所住所")) address = n.content || address;
-        if (n.name.includes("事業所名称") || n.name.includes("会社名")) companyName = n.content || companyName;
-        if (n.name.includes("氏名") || n.name.includes("代表者名")) recipientName = n.content || recipientName;
-        if (n.name.includes("作成年月日") || n.name.includes("通知年月日")) creationDate = n.content || creationDate;
-        if (n.name.includes("年金事務所名")) officeName = n.content || officeName;
+        const name = n.name;
+        const val = n.content || "";
+
+        // Synonym matching based on common e-Gov XML tags
+        if (name.includes("到達番号") || name === "ArrivalNumber") arrivalNumber = val || arrivalNumber;
+        if (name.includes("郵便番号") || name === "PostCode") postCode = val || postCode;
+        if (name.includes("所在地") || name.includes("住所") || name === "Address") address = val || address;
+        if (name.includes("事業所名称") || name.includes("会社名") || name === "CompanyName") companyName = val || companyName;
+        if (name.includes("氏名") || name.includes("代表者") || name === "Name") recipientName = val || recipientName;
+        if (name.includes("作成年月日") || name.includes("通知年月日") || name === "Date") creationDate = val || creationDate;
+        if (name.includes("年金事務所名") || name === "OfficeName") officeName = val || officeName;
         
-        if (["事業所整理記号", "事業所番号"].some(k => n.name.includes(k))) {
-            officeInfo[n.name] = n.content || "";
+        if (["事業所整理記号", "事業所番号", "OfficeID"].some(k => name.includes(k))) {
+            officeInfo[name] = val;
         }
 
         if (n.children.length === 0) {
-            if (n.content) headers[path + n.name] = n.content;
+            if (val) headers[path + name] = val;
             return;
         }
 
@@ -141,26 +152,340 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
             });
             sections.push({ name: n.name, isTable: true, headers: Array.from(tableHeaders), data: rows });
         } else {
-            n.children.forEach(c => processNode(c, path + n.name + "_"));
+            n.children.forEach(c => processNode(c, path + name + "_"));
         }
     };
     processNode(node);
     
     let title = node.name;
-    if (title.includes("Kokuho") || title.includes("S00") || title.includes("決定通知書")) {
+    if (title.match(/Kokuho|S00|決定通知/)) {
         title = "健康保険・厚生年金保険 被保険者標準報酬決定通知書";
     }
 
     return { title, arrivalNumber, postCode, address, companyName, recipientName, creationDate, officeName, officeInfo, headers, sections };
 };
 
+const handleUpload = async (e: Event) => {
+    const input = e.target as HTMLInputElement;
+    const files = Array.from(input.files || []);
+    if (files.length === 0) return;
+
+    state.isLoading = true;
+    state.cases = [];
+    state.logs = [];
+    addLog(`${files.length} 個のファイルをスキャン中...`);
+    render();
+
+    const caseMap = new Map<string, AppFile[]>();
+    const allPdfs = new Set<string>();
+
+    // Pass 1: Collect files and PDFs
+    for (const f of files) {
+        const path = (f as any).webkitRelativePath || f.name;
+        const dir = path.substring(0, path.lastIndexOf('/')) || "root";
+        if (f.name.toLowerCase().endsWith('.pdf')) allPdfs.add(path);
+        
+        if (f.name.toLowerCase().endsWith('.xml')) {
+            const content = await f.text();
+            try {
+                const parsed = parseXML(content);
+                const analysis = extractUniversalData(parsed);
+                
+                // XSL Resolution Logic
+                let detectedXsl = "";
+                const piMatch = parsed.processingInstructions.find(pi => pi.includes('href='));
+                if (piMatch) {
+                    const match = piMatch.match(/href="([^"]+)"/);
+                    if (match) detectedXsl = match[1];
+                }
+                
+                const fileEntry: AppFile = {
+                    name: f.name,
+                    fullPath: path,
+                    content,
+                    parsed,
+                    analysis,
+                    detectedXsl
+                };
+
+                if (!caseMap.has(dir)) caseMap.set(dir, []);
+                caseMap.get(dir)!.push(fileEntry);
+            } catch (err) {
+                addLog(`エラー: ${f.name} の解析に失敗しました。`);
+            }
+        }
+    }
+
+    // Pass 2: Finalize cases and PDF attachments
+    state.cases = Array.from(caseMap.entries()).map(([dir, xmls]) => {
+        xmls.forEach(xml => {
+            const xmlBase = xml.fullPath.substring(0, xml.fullPath.lastIndexOf('.'));
+            xml.hasPdf = Array.from(allPdfs).some(p => p.startsWith(xmlBase));
+        });
+        return {
+            folderPath: dir,
+            folderName: dir === "root" ? "ルート" : dir.split('/').pop() || dir,
+            files: xmls
+        };
+    });
+
+    if (state.cases.length > 0) {
+        state.selectedCaseIdx = 0;
+        state.selectedFileIdx = 0;
+        addLog(`${state.cases.length} 個の案件フォルダを検出しました。`);
+    } else {
+        addLog("表示可能なXMLファイルが見つかりませんでした。");
+    }
+
+    state.isLoading = false;
+    render();
+};
+
+const render = () => {
+    const root = document.getElementById('root');
+    if (!root) return;
+
+    if (state.cases.length === 0) {
+        root.innerHTML = `
+            <div class="min-h-screen flex items-center justify-center bg-slate-100 p-6">
+                <div class="bg-white p-12 rounded-[3rem] shadow-2xl border border-slate-200 w-full max-w-2xl text-center">
+                    <div class="bg-blue-600 w-24 h-24 rounded-3xl flex items-center justify-center mx-auto mb-10 text-white shadow-xl rotate-3">
+                        <i data-lucide="folder-search" size="48"></i>
+                    </div>
+                    <h2 class="text-4xl font-black mb-4 text-slate-900 tracking-tighter">e-Gov Pro Viewer</h2>
+                    <p class="text-slate-500 mb-12 text-lg font-medium leading-relaxed">
+                        ダウンロードしたフォルダごと選択してください。<br/>
+                        XML・XSL・PDFを自動的に関連付けます。
+                    </p>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <label class="block py-6 px-8 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-3xl cursor-pointer transition-all active:scale-95 shadow-lg group">
+                            <i data-lucide="folder-plus" class="mx-auto mb-2 group-hover:scale-110 transition-transform"></i>
+                            フォルダを選択
+                            <input type="file" id="folderInput" class="hidden" webkitdirectory />
+                        </label>
+                        <label class="block py-6 px-8 bg-slate-800 hover:bg-slate-900 text-white font-black rounded-3xl cursor-pointer transition-all active:scale-95 shadow-lg group">
+                            <i data-lucide="file-archive" class="mx-auto mb-2 group-hover:scale-110 transition-transform"></i>
+                            ZIPを選択
+                            <input type="file" id="zipInput" class="hidden" accept=".zip" />
+                        </label>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.getElementById('folderInput')?.addEventListener('change', handleUpload);
+        return;
+    }
+
+    const currentCase = state.cases[state.selectedCaseIdx];
+    const currentFile = currentCase.files[state.selectedFileIdx];
+    const data = currentFile.analysis;
+
+    root.innerHTML = `
+        <div class="h-screen flex flex-col bg-slate-100 overflow-hidden">
+            <!-- Header -->
+            <header class="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between z-50 shadow-sm">
+                <div class="flex items-center gap-4">
+                    <button id="resetBtn" class="p-2 hover:bg-slate-100 rounded-xl transition-colors text-slate-400"><i data-lucide="home" size="20"></i></button>
+                    <h1 class="text-lg font-black text-slate-800 tracking-tight">e-Gov Pro Viewer</h1>
+                </div>
+                <div class="flex items-center gap-4">
+                    <button id="toggleSettings" class="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl text-xs font-black transition-all">
+                        <i data-lucide="settings" size="14"></i> 保険料率
+                    </button>
+                </div>
+            </header>
+
+            <div class="flex-1 flex overflow-hidden">
+                <!-- Sidebar: Case/File List -->
+                <aside class="w-80 bg-white border-r border-slate-200 flex flex-col">
+                    <div class="p-4 border-b bg-slate-50">
+                        <h2 class="text-[10px] font-black text-slate-400 uppercase tracking-widest">案件フォルダ (${state.cases.length})</h2>
+                    </div>
+                    <div class="flex-1 overflow-y-auto">
+                        ${state.cases.map((c, cIdx) => `
+                            <div class="border-b border-slate-50">
+                                <div class="px-4 py-3 bg-slate-50/50 flex items-center gap-2">
+                                    <i data-lucide="folder" size="14" class="text-blue-500"></i>
+                                    <span class="text-[11px] font-black text-slate-700 truncate">${c.folderName}</span>
+                                </div>
+                                <div class="py-1">
+                                    ${c.files.map((f, fIdx) => `
+                                        <button class="w-full text-left px-8 py-3 text-xs font-bold transition-all flex items-center justify-between select-file-btn ${cIdx === state.selectedCaseIdx && fIdx === state.selectedFileIdx ? 'bg-blue-600 text-white shadow-inner' : 'hover:bg-slate-50 text-slate-500'}" data-case="${cIdx}" data-file="${fIdx}">
+                                            <span class="truncate pr-2">${f.name}</span>
+                                            ${f.hasPdf ? '<i data-lucide="file-check" size="12" class="opacity-50"></i>' : ''}
+                                        </button>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </aside>
+
+                <!-- Main View -->
+                <main class="flex-1 bg-slate-200 overflow-y-auto p-4 md:p-12 relative flex flex-col items-center">
+                    ${state.viewMode === 'summary' && data ? renderDocument(data, currentFile) : renderTree(currentFile.parsed!)}
+                </main>
+            </div>
+
+            <!-- Footer: Logs -->
+            <footer class="bg-slate-900 text-blue-300 px-6 py-2 h-32 border-t border-slate-800 font-mono text-[10px] overflow-y-auto">
+                <div class="flex justify-between items-center mb-2 sticky top-0 bg-slate-900 py-1">
+                    <span class="font-black text-slate-500 uppercase tracking-widest">System Logs</span>
+                    <button id="clearLogs" class="text-slate-500 hover:text-white transition-colors">CLEAR</button>
+                </div>
+                ${state.logs.map(log => `<div>${log}</div>`).join('')}
+                ${state.logs.length === 0 ? '<div class="italic opacity-30">No logs available.</div>' : ''}
+            </footer>
+
+            <!-- Settings Overlay -->
+            ${state.showSettings ? renderSettings() : ''}
+        </div>
+    `;
+
+    attachEvents();
+    if ((window as any).lucide) (window as any).lucide.createIcons();
+};
+
+const renderDocument = (data: UniversalData, file: AppFile) => {
+    const calculations = calculateIfPossible(data);
+    return `
+        <div class="bg-white shadow-2xl w-full max-w-[900px] min-h-[1200px] p-12 md:p-20 text-slate-900 relative border border-slate-300 mb-20">
+            <!-- Header Grid -->
+            <div class="flex justify-between items-start mb-12">
+                <div class="text-[14px] font-bold leading-relaxed">
+                    <p class="mb-1">〒${data.postCode || '--- ----'}</p>
+                    <p class="mb-4">${data.address || '---'}</p>
+                    <p class="text-xl mb-4 font-black">${data.companyName || '---'}</p>
+                    <p class="text-xl font-black">${data.recipientName || '---'}　様</p>
+                </div>
+                <div class="text-right">
+                    <p class="text-[11px] font-bold text-slate-400">到達番号 ${data.arrivalNumber || '---'}</p>
+                    ${file.detectedXsl ? `<p class="text-[9px] font-mono text-blue-400 mt-1">XSL: ${file.detectedXsl}</p>` : ''}
+                </div>
+            </div>
+
+            <div class="text-center mb-16">
+                <h1 class="text-2xl font-black border-b-[2.5px] border-slate-900 inline-block px-12 pb-1 tracking-tight">
+                    ${data.title}
+                </h1>
+            </div>
+
+            <div class="flex gap-12 mb-10">
+                <div>
+                    <span class="text-[10px] font-black text-slate-400 block mb-1 uppercase tracking-widest">事業所整理記号</span>
+                    <span class="text-lg font-mono font-bold">${data.officeInfo["事業所整理記号"] || data.headers["事業所整理記号"] || "---"}</span>
+                </div>
+                <div>
+                    <span class="text-[10px] font-black text-slate-400 block mb-1 uppercase tracking-widest">事業所番号</span>
+                    <span class="text-lg font-mono font-bold">${data.officeInfo["事業所番号"] || data.headers["事業所番号"] || "---"}</span>
+                </div>
+            </div>
+
+            ${data.sections.map(section => `
+                <div class="mb-12 overflow-x-auto">
+                    <table class="w-full border-collapse border-[1.5px] border-slate-900 text-[11px]">
+                        <thead>
+                            <tr class="bg-slate-50">
+                                <th rowspan="2" class="border border-slate-900 p-2 w-14 text-center font-bold">整理番号</th>
+                                <th rowspan="2" class="border border-slate-900 p-2 font-bold text-center">被保険者氏名</th>
+                                <th rowspan="2" class="border border-slate-900 p-2 w-16 text-center font-bold">適用年月</th>
+                                <th colspan="2" class="border border-slate-900 p-1 text-center font-bold">決定後の標準報酬月額</th>
+                                <th rowspan="2" class="border border-slate-900 p-2 w-24 text-center font-bold">生年月日</th>
+                                <th rowspan="2" class="border border-slate-900 p-2 w-16 text-center font-bold">種別</th>
+                                ${calculations ? `<th rowspan="2" class="border border-slate-900 p-2 w-24 text-center font-bold bg-blue-50 text-blue-700">概算負担額</th>` : ''}
+                            </tr>
+                            <tr class="bg-slate-50">
+                                <th class="border border-slate-900 p-1 w-20 text-center font-bold text-[9px]">(健保)</th>
+                                <th class="border border-slate-900 p-1 w-20 text-center font-bold text-[9px]">(厚年)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${section.data.map((row, rIdx) => {
+                                const hKey = section.headers?.find(h => h.match(/健保|標準報酬月額|Health/));
+                                const pKey = section.headers?.find(h => h.match(/厚年|標準報酬月額|Pension/));
+                                const bKey = section.headers?.find(h => h.match(/生年月日|Birth/));
+                                const nKey = section.headers?.find(h => h.match(/氏名|Name/));
+                                const iKey = section.headers?.find(h => h.match(/番号|ID/));
+                                const tKey = section.headers?.find(h => h.match(/適用年月|Apply/));
+                                const cKey = section.headers?.find(h => h.match(/種別|区分|Type/));
+
+                                return `
+                                    <tr class="hover:bg-slate-50 transition-colors">
+                                        <td class="border border-slate-900 p-2 text-center font-mono">${row[iKey!] || '-'}</td>
+                                        <td class="border border-slate-900 p-2 font-bold text-[13px]">${row[nKey!] || '-'}</td>
+                                        <td class="border border-slate-900 p-2 text-center">${row[tKey!] || '-'}</td>
+                                        <td class="border border-slate-900 p-2 text-right font-bold">${row[hKey!] || '-'}</td>
+                                        <td class="border border-slate-900 p-2 text-right font-bold">${row[pKey!] || '-'}</td>
+                                        <td class="border border-slate-900 p-2 text-center">${row[bKey!] || '-'}</td>
+                                        <td class="border border-slate-900 p-2 text-center">${row[cKey!] || '-'}</td>
+                                        ${calculations ? `
+                                            <td class="border border-slate-900 p-2 text-right font-black text-blue-700 bg-blue-50/50">
+                                                ¥${calculations[rIdx]?.toLocaleString()}
+                                            </td>
+                                        ` : ''}
+                                    </tr>
+                                `;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `).join('')}
+
+            <div class="mt-20 text-[10px] space-y-2 text-slate-500 font-bold border-t pt-8">
+                <p>※1 元号　S：昭和　H：平成　R：令和</p>
+                <p>※2 種別　第一種：男性　第二種：女性　第三種：坑内員　等</p>
+                <p class="mt-4">上記の通り標準報酬が決定されたので通知します。</p>
+                <div class="pt-12 flex justify-between items-end text-slate-900">
+                    <div class="font-bold">
+                        <p class="mb-4">${data.creationDate || '令和７年１２月 ５日'}</p>
+                        <p class="text-lg">日本年金機構 理事長</p>
+                        <p class="mt-1">（ ${data.officeName || '年金事務所'} ）</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+};
+
+const renderTree = (node: XMLNode): string => {
+    const traverse = (n: XMLNode): string => `
+        <div class="xml-node my-0.5 border-l border-white/10 pl-4 py-0.5">
+            <span class="text-indigo-400 opacity-60">&lt;${n.name}&gt;</span>
+            ${n.content ? `<span class="text-white ml-1 font-bold">${n.content}</span>` : ''}
+            <div>${n.children.map(c => traverse(c)).join('')}</div>
+            <span class="text-indigo-400 opacity-60">&lt;/${n.name}&gt;</span>
+        </div>
+    `;
+    return `
+        <div class="bg-slate-900 p-10 rounded-[3rem] shadow-2xl overflow-auto text-blue-200 font-mono text-[11px] w-full max-w-4xl min-h-[800px]">
+            ${traverse(node)}
+        </div>
+    `;
+};
+
+const renderSettings = () => `
+    <div class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-6">
+        <div class="bg-white rounded-[3rem] shadow-2xl p-10 max-w-sm w-full animate-in zoom-in duration-200">
+            <h3 class="text-xl font-black mb-8 flex items-center gap-2 text-slate-800"><i data-lucide="calculator"></i> 保険料率設定 (%)</h3>
+            <div class="space-y-6">
+                ${Object.entries(state.rates).map(([k, v]) => `
+                    <div>
+                        <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${k === 'health' ? '健康保険' : k === 'pension' ? '厚生年金' : '介護保険'}</label>
+                        <input type="number" step="0.001" value="${v}" data-key="${k}" class="rate-input w-full p-4 bg-slate-100 border-none rounded-2xl font-black text-slate-700 focus:ring-2 ring-blue-500 outline-none" />
+                    </div>
+                `).join('')}
+            </div>
+            <button id="closeSettings" class="w-full mt-10 py-5 bg-slate-900 text-white font-black rounded-2xl hover:bg-slate-800 transition-all shadow-xl">保存して適用</button>
+        </div>
+    </div>
+`;
+
 const calculateIfPossible = (data: UniversalData) => {
     const section = data.sections.find(s => s.isTable);
     if (!section || !section.headers) return null;
-    const hIdx = section.headers.findIndex(h => ["健保", "健康保険", "標準額", "標準報酬", "賞与額"].some(k => h.includes(k)));
+    const hIdx = section.headers.findIndex(h => h.match(/健保|標準報酬月額|Health/));
     if (hIdx === -1) return null;
-    const pIdx = section.headers.findIndex(h => ["厚年", "厚生年金"].some(k => h.includes(k)));
-    const bIdx = section.headers.findIndex(h => ["生年月日", "生年"].some(k => h.includes(k)));
+    const pIdx = section.headers.findIndex(h => h.match(/厚年|標準報酬月額|Pension/));
 
     return section.data.map(row => {
         const parseValue = (val: any) => {
@@ -178,340 +503,23 @@ const calculateIfPossible = (data: UniversalData) => {
     });
 };
 
-const render = () => {
-    const root = document.getElementById('root');
-    if (!root) return;
-
-    if (state.cases.length === 0) {
-        root.innerHTML = `
-            <div class="min-h-screen flex items-center justify-center bg-slate-50 p-4">
-                <div class="bg-white p-12 rounded-[2.5rem] shadow-2xl border border-slate-200 w-full max-w-xl text-center">
-                    <div class="bg-slate-900 w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-10 text-white shadow-xl rotate-3">
-                        <i data-lucide="folder-open" size="40"></i>
-                    </div>
-                    <h2 class="text-3xl font-black mb-4 text-slate-900 tracking-tighter">e-Gov 案件ビューア</h2>
-                    <p class="text-slate-500 mb-10 text-lg font-medium">ZIP、または案件フォルダを選択してください。</p>
-                    
-                    <div class="grid grid-cols-1 gap-4">
-                        <label class="block py-5 px-8 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl cursor-pointer transition-all active:scale-95 shadow-lg">
-                            <span class="flex items-center justify-center gap-2"><i data-lucide="file-archive"></i> ZIPファイルを選択</span>
-                            <input type="file" id="fileInput" class="hidden" accept=".zip,.xml" />
-                        </label>
-                        <label class="block py-5 px-8 bg-slate-800 hover:bg-slate-900 text-white font-black rounded-2xl cursor-pointer transition-all active:scale-95 shadow-lg">
-                            <span class="flex items-center justify-center gap-2"><i data-lucide="folder-plus"></i> フォルダ(案件)を一括選択</span>
-                            <input type="file" id="folderInput" class="hidden" webkitdirectory />
-                        </label>
-                    </div>
-                </div>
-            </div>
-        `;
-        document.getElementById('fileInput')?.addEventListener('change', handleUpload);
-        document.getElementById('folderInput')?.addEventListener('change', handleUpload);
-    } else if (state.selectedCaseIndex === -1) {
-        root.innerHTML = `
-            <div class="min-h-screen bg-slate-50 flex flex-col p-8">
-                <header class="max-w-4xl mx-auto w-full mb-12 flex justify-between items-end">
-                    <div>
-                        <h2 class="text-3xl font-black text-slate-900">案件一覧</h2>
-                        <p class="text-slate-500 font-bold">${state.cases.length} 件の案件が見つかりました</p>
-                    </div>
-                    <button id="resetBtn" class="bg-white text-slate-600 px-6 py-3 rounded-2xl font-black border hover:bg-slate-50 shadow-sm transition-all">リセット</button>
-                </header>
-                <div class="max-w-4xl mx-auto w-full grid gap-4">
-                    ${state.cases.map((c, index) => `
-                        <button class="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 hover:border-blue-500 hover:shadow-xl transition-all flex items-center gap-6 text-left select-case-btn" data-index="${index}">
-                            <div class="bg-blue-50 p-4 rounded-2xl text-blue-600 shadow-inner"><i data-lucide="folder" size="28"></i></div>
-                            <div class="flex-1 min-w-0">
-                                <h3 class="text-lg font-black text-slate-800 truncate mb-1">${c.folderName}</h3>
-                                <div class="flex gap-4">
-                                    <span class="text-[10px] bg-slate-100 text-slate-500 px-2 py-1 rounded-lg font-black">XML: ${c.xmlFiles.length}</span>
-                                    <span class="text-[10px] bg-red-50 text-red-500 px-2 py-1 rounded-lg font-black">PDF: ${c.pdfFiles.length}</span>
-                                </div>
-                            </div>
-                            <i data-lucide="chevron-right" size="24" class="text-slate-300"></i>
-                        </button>
-                    `).join('')}
-                </div>
-            </div>
-        `;
-        attachCasePickerEvents();
-    } else {
-        const currentCase = state.cases[state.selectedCaseIndex];
-        const currentFile = currentCase.xmlFiles[state.selectedFileIndex];
-        const data = currentFile.analysis;
-        const calculations = data ? calculateIfPossible(data) : null;
-
-        root.innerHTML = `
-            <div class="min-h-screen bg-slate-100 flex flex-col">
-                <!-- Toolbar -->
-                <header class="bg-slate-900 text-white px-6 py-3 flex items-center justify-between sticky top-0 z-[100] shadow-2xl">
-                    <div class="flex items-center gap-6">
-                        <button id="backToPicker" class="hover:bg-white/10 p-2 rounded-xl transition-colors"><i data-lucide="chevron-left" size="24"></i></button>
-                        <div>
-                            <p class="text-[10px] font-black opacity-40 leading-none mb-1">CURRENT CASE</p>
-                            <h1 class="text-sm font-black truncate max-w-[300px]">${currentCase.folderName}</h1>
-                        </div>
-                    </div>
-                    <div class="flex items-center gap-3">
-                        ${currentCase.xmlFiles.length > 1 ? `
-                            <select id="fileSelector" class="bg-white/10 border-none rounded-xl px-4 py-2 text-xs font-black text-white outline-none">
-                                ${currentCase.xmlFiles.map((f, i) => `<option value="${i}" ${i === state.selectedFileIndex ? 'selected' : ''} class="text-slate-900">${f.name}</option>`).join('')}
-                            </select>
-                        ` : ''}
-                        <button id="toggleSettings" class="p-2 hover:bg-white/10 rounded-xl transition-colors"><i data-lucide="settings" size="20"></i></button>
-                        <button id="viewTree" class="bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl text-xs font-black">XML</button>
-                    </div>
-                </header>
-
-                <div class="flex-1 flex overflow-hidden">
-                    <!-- Main Document View -->
-                    <main class="flex-1 overflow-y-auto p-4 md:p-12 flex flex-col items-center">
-                        ${state.viewMode === 'summary' && data ? `
-                            <div class="bg-white shadow-2xl w-full max-w-[900px] min-h-[1200px] p-12 md:p-20 text-slate-900 relative border border-slate-300 mb-20 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                                
-                                <!-- Top: Address & Arrival -->
-                                <div class="flex justify-between items-start mb-12">
-                                    <div class="text-[15px] font-bold leading-relaxed">
-                                        <p class="mb-1">${data.postCode ? '〒' + data.postCode : ''}</p>
-                                        <p class="mb-4">${data.address || ''}</p>
-                                        <p class="text-xl mb-4">${data.companyName || ''}</p>
-                                        <p class="text-xl">${data.recipientName || ''}　様</p>
-                                    </div>
-                                    <div class="text-right">
-                                        <p class="text-[12px] font-bold">到達番号　${data.arrivalNumber || ''}</p>
-                                    </div>
-                                </div>
-
-                                <!-- Center Title -->
-                                <div class="text-center mb-16">
-                                    <h1 class="text-2xl font-black border-b-[2px] border-slate-900 inline-block px-10 pb-1">
-                                        ${data.title}
-                                    </h1>
-                                </div>
-
-                                <!-- Management Numbers -->
-                                <div class="flex gap-12 mb-10">
-                                    <div>
-                                        <span class="text-[11px] font-black text-slate-400 block mb-1">事業所整理記号</span>
-                                        <span class="text-lg font-mono font-bold">${data.officeInfo["事業所整理記号"] || "---"}</span>
-                                    </div>
-                                    <div>
-                                        <span class="text-[11px] font-black text-slate-400 block mb-1">事業所番号</span>
-                                        <span class="text-lg font-mono font-bold">${data.officeInfo["事業所番号"] || "---"}</span>
-                                    </div>
-                                </div>
-
-                                <!-- Main Data Table -->
-                                ${data.sections.map((section, sIdx) => `
-                                    <div class="mb-12 overflow-x-auto">
-                                        <table class="w-full border-collapse border-[1.5px] border-slate-900 text-[12px]">
-                                            <thead>
-                                                <tr class="bg-slate-50">
-                                                    <th rowspan="2" class="border border-slate-900 p-2 w-16 text-center font-bold">整理番号</th>
-                                                    <th rowspan="2" class="border border-slate-900 p-2 font-bold text-center">被保険者氏名</th>
-                                                    <th rowspan="2" class="border border-slate-900 p-2 w-20 text-center font-bold">※1 適用年月</th>
-                                                    <th colspan="2" class="border border-slate-900 p-1 text-center font-bold">決定後の標準報酬月額</th>
-                                                    <th rowspan="2" class="border border-slate-900 p-2 w-24 text-center font-bold">※1 生年月日</th>
-                                                    <th rowspan="2" class="border border-slate-900 p-2 w-16 text-center font-bold">※2 種別</th>
-                                                    ${calculations && section.isTable ? `<th rowspan="2" class="border border-slate-900 p-2 w-28 text-center font-bold bg-blue-50 text-blue-700">概算本人負担額</th>` : ''}
-                                                </tr>
-                                                <tr class="bg-slate-50">
-                                                    <th class="border border-slate-900 p-1 w-24 text-center font-bold text-[10px]">(健保)</th>
-                                                    <th class="border border-slate-900 p-1 w-24 text-center font-bold text-[10px]">(厚年)</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                ${section.data.map((row, rIdx) => {
-                                                    const hKey = section.headers?.find(h => h.includes("健保") || h.includes("標準報酬月額"));
-                                                    const pKey = section.headers?.find(h => h.includes("厚年") || h.includes("標準報酬月額"));
-                                                    const bKey = section.headers?.find(h => h.includes("生年月日"));
-                                                    const nKey = section.headers?.find(h => h.includes("氏名"));
-                                                    const iKey = section.headers?.find(h => h.includes("番号") || h.includes("整理番号"));
-                                                    const tKey = section.headers?.find(h => h.includes("適用年月"));
-                                                    const cKey = section.headers?.find(h => h.includes("種別") || h.includes("区分"));
-
-                                                    return `
-                                                        <tr class="hover:bg-slate-50 transition-colors">
-                                                            <td class="border border-slate-900 p-3 text-center font-mono">${row[iKey!] || '-'}</td>
-                                                            <td class="border border-slate-900 p-3 font-bold text-sm">${row[nKey!] || '-'}</td>
-                                                            <td class="border border-slate-900 p-3 text-center">${row[tKey!] || '-'}</td>
-                                                            <td class="border border-slate-900 p-3 text-right font-bold">${row[hKey!] || '-'}</td>
-                                                            <td class="border border-slate-900 p-3 text-right font-bold">${row[pKey!] || '-'}</td>
-                                                            <td class="border border-slate-900 p-3 text-center">${row[bKey!] || '-'}</td>
-                                                            <td class="border border-slate-900 p-3 text-center">${row[cKey!] || '-'}</td>
-                                                            ${calculations && section.isTable ? `
-                                                                <td class="border border-slate-900 p-3 text-right font-black text-blue-700 bg-blue-50/50">
-                                                                    ¥${calculations[rIdx]?.toLocaleString()}
-                                                                </td>
-                                                            ` : ''}
-                                                        </tr>
-                                                    `;
-                                                }).join('')}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                `).join('')}
-
-                                <!-- Footer Notes & Issuer -->
-                                <div class="mt-20 text-[11px] space-y-2 text-slate-500 font-bold border-t pt-10">
-                                    <p>※1 元号　S：昭和　H：平成　R：令和</p>
-                                    <p>※2 種別　第一種：男性　第二種：女性　第三種：坑内員　等</p>
-                                    <p class="mt-4">上記の通り標準報酬が決定されたので通知します。</p>
-                                    
-                                    <div class="pt-16 flex justify-between items-end text-slate-900">
-                                        <div class="text-[13px] font-bold">
-                                            <p class="mb-4">${data.creationDate || '令和７年１２月 ５日'}</p>
-                                            <p class="text-lg">日本年金機構 理事長</p>
-                                            <p class="mt-1">（ ${data.officeName || '枚方年金事務所'} ）</p>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        ` : `
-                            <div class="bg-slate-900 p-10 rounded-[3rem] shadow-2xl overflow-auto text-blue-200 font-mono text-xs w-full max-w-4xl">
-                                ${currentFile.parsed ? renderTree(currentFile.parsed) : 'No data'}
-                            </div>
-                        `}
-                    </main>
-
-                    <!-- Case Info Sidebar -->
-                    <aside class="w-80 bg-white border-l border-slate-200 p-6 overflow-y-auto hidden lg:block">
-                        <h4 class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">Case Assets</h4>
-                        <div class="space-y-6">
-                            <div>
-                                <label class="text-[10px] font-black text-blue-600 block mb-2 uppercase">XML Files</label>
-                                <div class="space-y-2">
-                                    ${currentCase.xmlFiles.map((f, i) => `
-                                        <button class="w-full text-left p-3 rounded-xl text-xs font-bold transition-all ${i === state.selectedFileIndex ? 'bg-blue-600 text-white shadow-lg' : 'hover:bg-slate-50 text-slate-600'} select-file-sidebar" data-index="${i}">
-                                            ${f.name}
-                                        </button>
-                                    `).join('')}
-                                </div>
-                            </div>
-                            ${currentCase.pdfFiles.length > 0 ? `
-                                <div>
-                                    <label class="text-[10px] font-black text-red-500 block mb-2 uppercase">Attached PDFs</label>
-                                    <div class="space-y-2">
-                                        ${currentCase.pdfFiles.map(pdf => `
-                                            <div class="p-3 bg-red-50 rounded-xl flex items-center justify-between group cursor-pointer">
-                                                <span class="text-[11px] font-bold text-red-700 truncate">${pdf}</span>
-                                                <i data-lucide="external-link" size="14" class="text-red-300"></i>
-                                            </div>
-                                        `).join('')}
-                                    </div>
-                                </div>
-                            ` : ''}
-                        </div>
-                    </aside>
-                </div>
-
-                <!-- Settings Overlay -->
-                ${state.showSettings ? `
-                    <div class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-6" id="settingsOverlay">
-                        <div class="bg-white rounded-[2.5rem] shadow-2xl p-10 max-w-sm w-full">
-                            <h3 class="text-xl font-black mb-8 flex items-center gap-2 text-slate-800"><i data-lucide="calculator"></i> 保険料率設定 (%)</h3>
-                            <div class="space-y-6">
-                                ${Object.entries(state.rates).map(([k, v]) => `
-                                    <div>
-                                        <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${k === 'health' ? '健康保険' : k === 'pension' ? '厚生年金' : '介護保険'}</label>
-                                        <input type="number" step="0.001" value="${v}" data-key="${k}" class="rate-input w-full p-4 bg-slate-100 border-none rounded-2xl font-black text-slate-700" />
-                                    </div>
-                                `).join('')}
-                            </div>
-                            <button id="closeSettings" class="w-full mt-10 py-5 bg-slate-900 text-white font-black rounded-2xl hover:bg-slate-800 transition-all shadow-xl">保存して戻る</button>
-                        </div>
-                    </div>
-                ` : ''}
-            </div>
-        `;
-        attachEvents();
-    }
-    if ((window as any).lucide) (window as any).lucide.createIcons();
-};
-
-const renderTree = (node: XMLNode): string => {
-    return `
-        <div class="xml-node my-0.5">
-            <span class="text-indigo-400 opacity-60">&lt;${node.name}&gt;</span>
-            ${node.content ? `<span class="text-white ml-1 font-bold">${node.content}</span>` : ''}
-            <div>${node.children.map(c => renderTree(c)).join('')}</div>
-            <span class="text-indigo-400 opacity-60">&lt;/${node.name}&gt;</span>
-        </div>
-    `;
-};
-
-const handleUpload = async (e: Event) => {
-    const input = e.target as HTMLInputElement;
-    const files = Array.from(input.files || []);
-    if (files.length === 0) return;
-
-    state.isLoading = true;
-    render();
-
-    const casesMap = new Map<string, AppCase>();
-
-    for (const file of files) {
-        // Simple case grouping: relativePath directory or ZIP extraction
-        const pathParts = (file as any).webkitRelativePath ? (file as any).webkitRelativePath.split('/') : [file.name];
-        const folderName = pathParts.length > 1 ? pathParts[pathParts.length - 2] : "Root Case";
-        
-        if (!casesMap.has(folderName)) {
-            casesMap.set(folderName, { id: Math.random().toString(36), folderName, xmlFiles: [], pdfFiles: [] });
-        }
-        const currentCase = casesMap.get(folderName)!;
-
-        if (file.name.toLowerCase().endsWith('.xml')) {
-            const content = await file.text();
-            const parsed = parseXML(content);
-            currentCase.xmlFiles.push({ name: file.name, content, parsed, analysis: extractUniversalData(parsed) });
-        } else if (file.name.toLowerCase().endsWith('.pdf')) {
-            currentCase.pdfFiles.push(file.name);
-        } else if (file.name.toLowerCase().endsWith('.zip')) {
-            const zip = await JSZip.loadAsync(file);
-            for (const filename of Object.keys(zip.files)) {
-                if (filename.toLowerCase().endsWith('.xml')) {
-                    const content = await zip.files[filename].async('string');
-                    const parsed = parseXML(content);
-                    currentCase.xmlFiles.push({ name: filename, content, parsed, analysis: extractUniversalData(parsed) });
-                } else if (filename.toLowerCase().endsWith('.pdf')) {
-                    currentCase.pdfFiles.push(filename);
-                }
-            }
-        }
-    }
-
-    state.cases = Array.from(casesMap.values()).filter(c => c.xmlFiles.length > 0);
-    if (state.cases.length === 1) state.selectedCaseIndex = 0;
-    state.isLoading = false;
-    render();
-};
-
-const attachCasePickerEvents = () => {
-    document.getElementById('resetBtn')?.addEventListener('click', () => { state.cases = []; state.selectedCaseIndex = -1; render(); });
-    document.querySelectorAll('.select-case-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            state.selectedCaseIndex = parseInt((e.currentTarget as HTMLElement).dataset.index || "0");
-            state.selectedFileIndex = 0;
-            render();
-        });
-    });
-};
-
 const attachEvents = () => {
-    document.getElementById('backToPicker')?.addEventListener('click', () => { state.selectedCaseIndex = -1; render(); });
+    document.getElementById('resetBtn')?.addEventListener('click', () => { 
+        state.cases = []; 
+        state.selectedCaseIdx = -1; 
+        state.selectedFileIdx = -1; 
+        render(); 
+    });
     document.getElementById('toggleSettings')?.addEventListener('click', () => { state.showSettings = !state.showSettings; render(); });
     document.getElementById('closeSettings')?.addEventListener('click', () => { state.showSettings = false; render(); });
-    document.getElementById('viewTree')?.addEventListener('click', () => { state.viewMode = 'tree'; render(); });
-    document.getElementById('viewSummary')?.addEventListener('click', () => { state.viewMode = 'summary'; render(); });
-    
-    document.getElementById('fileSelector')?.addEventListener('change', (e) => {
-        state.selectedFileIndex = parseInt((e.target as HTMLSelectElement).value);
-        render();
-    });
+    document.getElementById('clearLogs')?.addEventListener('click', () => { state.logs = []; render(); });
 
-    document.querySelectorAll('.select-file-sidebar').forEach(btn => {
+    document.querySelectorAll('.select-file-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
-            state.selectedFileIndex = parseInt((e.currentTarget as HTMLElement).dataset.index || "0");
+            const target = e.currentTarget as HTMLElement;
+            state.selectedCaseIdx = parseInt(target.dataset.case!);
+            state.selectedFileIdx = parseInt(target.dataset.file!);
+            state.viewMode = 'summary';
             render();
         });
     });
@@ -521,7 +529,6 @@ const attachEvents = () => {
             const el = e.target as HTMLInputElement;
             const key = el.dataset.key as 'health' | 'pension' | 'nursing';
             state.rates[key] = parseFloat(el.value);
-            render();
         });
     });
 };
