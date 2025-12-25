@@ -89,9 +89,7 @@ const addLog = (msg: string) => {
 
 const parseAmountValue = (str: string): number => {
     if (!str) return 0;
-    // 数値を抽出
     const num = parseInt(str.replace(/[^0-9]/g, "")) || 0;
-    // 「千」または「千円」という表記が含まれている場合は1000倍する
     if (str.includes("千")) {
         return num * 1000;
     }
@@ -111,28 +109,27 @@ const calculateInsurance = (row: any, rates: typeof state.rates) => {
     // --- 介護保険料の判定 (40歳以上65歳未満) ---
     let isNursingSubject = false;
     let age = -1;
-    const gengo = row["生年月日_元号"];
+    const gengoRaw = row["生年月日_元号"];
     const y = parseInt(row["生年月日_年"]);
     const m = parseInt(row["生年月日_月"]) || 1;
     const d = parseInt(row["生年月日_日"]) || 1;
 
-    if (gengo && !isNaN(y)) {
+    if (gengoRaw && !isNaN(y)) {
         let birthYear = 0;
-        // 年金機構の元号コード: 1:明治, 3:大正, 5:昭和, 7:平成, 9:令和
-        if (gengo === "1") birthYear = 1867 + y;
-        else if (gengo === "3") birthYear = 1911 + y;
-        else if (gengo === "5") birthYear = 1925 + y;
-        else if (gengo === "7") birthYear = 1988 + y;
-        else if (gengo === "9") birthYear = 2018 + y;
+        const g = String(gengoRaw).trim();
+        // 1:明治, 3:大正, 5:昭和, 7:平成, 9:令和
+        if (g === "1") birthYear = 1867 + y;
+        else if (g === "3") birthYear = 1911 + y;
+        else if (g === "5") birthYear = 1925 + y;
+        else if (g === "7") birthYear = 1988 + y;
+        else if (g === "9") birthYear = 2018 + y;
 
         if (birthYear > 0) {
             const today = new Date();
             age = today.getFullYear() - birthYear;
-            // 誕生日前なら1引く（簡易判定）
             if (today.getMonth() + 1 < m || (today.getMonth() + 1 === m && today.getDate() < d)) {
                 age--;
             }
-            // 介護保険 第2号被保険者は 40歳以上65歳未満
             isNursingSubject = (age >= 40 && age < 65);
         }
     }
@@ -141,6 +138,36 @@ const calculateInsurance = (row: any, rates: typeof state.rates) => {
     const totalEmp = healthEmp + pensionEmp + nursingEmp;
 
     return { hSalary, pSalary, healthEmp, pensionEmp, nursingEmp, totalEmp, isNursingSubject, age };
+};
+
+const exportCalcToCSV = (data: UniversalData) => {
+    const section = data.sections.find(s => s.isTable);
+    if (!section) return;
+    const rows = section.data;
+    
+    let csv = "\uFEFF"; // UTF-8 BOM
+    csv += "整理番号,被保険者氏名,年齢,標準額(健康保険),標準額(厚生年金),健康保険料(従業員負担分),厚生年金保険料(従業員負担分),介護保険料(従業員負担分),合計(従業員負担分)\n";
+    
+    rows.forEach(row => {
+        const res = calculateInsurance(row, state.rates);
+        csv += [
+            row["被保険者整理番号"] || "",
+            row["被保険者氏名"] || "",
+            res.age >= 0 ? res.age : "-",
+            res.hSalary,
+            res.pSalary,
+            res.healthEmp,
+            res.pensionEmp,
+            res.nursingEmp,
+            res.totalEmp
+        ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(",") + "\n";
+    });
+    
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `保険料シミュレーション_${data.companyName || 'export'}.csv`;
+    link.click();
 };
 
 // --- XML Utilities ---
@@ -337,6 +364,7 @@ const renderCalculationOverlay = (data: UniversalData) => {
                 <div class="p-8 bg-slate-50 border-t flex justify-between items-center">
                     <p class="text-[11px] text-slate-400 font-bold leading-relaxed">※介護保険料は40歳〜64歳の被保険者のみ計算しています。<br>※金額表示は 1,000円 単位の読み替えを反映した合計額です。</p>
                     <div class="flex gap-4">
+                        <button id="calcToCsvBtn" class="bg-white border border-slate-300 text-slate-900 px-8 py-4 rounded-2xl font-black text-xs shadow-sm flex items-center gap-2 hover:bg-slate-100 transition-all"><i data-lucide="download" size="16"></i> CSV出力</button>
                         <button id="closeCalcBtnBottom" class="bg-blue-600 text-white px-8 py-4 rounded-2xl font-black text-xs">確認終了</button>
                     </div>
                 </div>
@@ -429,6 +457,10 @@ const attachEvents = () => {
     document.getElementById('calcMenuBtn')?.addEventListener('click', () => { state.showSettings = true; state.isSimulating = true; render(); });
     document.getElementById('closeCalcBtn')?.addEventListener('click', () => { state.showCalcResults = false; render(); });
     document.getElementById('closeCalcBtnBottom')?.addEventListener('click', () => { state.showCalcResults = false; render(); });
+    document.getElementById('calcToCsvBtn')?.addEventListener('click', () => { 
+        const currentFile = state.cases[state.selectedCaseIdx]?.files[state.selectedFileIdx];
+        if (currentFile?.analysis) exportCalcToCSV(currentFile.analysis);
+    });
     document.querySelectorAll('.toggle-case-btn').forEach(btn => btn.addEventListener('click', (e) => { const idx = parseInt((e.currentTarget as HTMLElement).dataset.index!); state.cases[idx].isOpen = !state.cases[idx].isOpen; render(); }));
     document.querySelectorAll('.select-file-btn').forEach(btn => btn.addEventListener('click', (e) => { const target = e.currentTarget as HTMLElement; state.selectedCaseIdx = parseInt(target.dataset.case!); state.selectedFileIdx = parseInt(target.dataset.file!); render(); }));
     document.querySelectorAll('.rate-input').forEach(input => input.addEventListener('change', (e) => { const el = e.target as HTMLInputElement; (state.rates as any)[el.dataset.key!] = parseFloat(el.value); }));
