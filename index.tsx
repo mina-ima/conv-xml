@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import JSZip from "jszip";
 
@@ -445,8 +444,11 @@ const renderNoticeSheet = (data: UniversalData) => {
                     const datePrefix = isBonusDoc ? "賞与支払年月日" : "適用年月";
                     const payDate = getFormattedDates(r[`${datePrefix}_元号`], r[`${datePrefix}_年`], r[`${datePrefix}_月`], r[`${datePrefix}_日`] || "1");
                     const birthDate = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]);
-                    const val1 = normalize(r[isBonusDoc ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
-                    const val2 = normalize(r[isBonusDoc ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
+                    
+                    // 金額表示の重複（千円千円）を防ぐため、数値のみを抽出しカンマ区切りで整形
+                    const val1 = parseStandardAmount(r[isBonusDoc ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]).toLocaleString();
+                    const val2 = parseStandardAmount(r[isBonusDoc ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]).toLocaleString();
+                    
                     return `<tr class="h-20 text-center border-b border-black"><td class="border-r border-black">${normalize(r["被保険者整理番号"] || "")}</td><td class="border-r border-black text-left px-6 font-black text-xl">${normalize(r["被保険者氏名"] || "")}</td><td class="border-r border-black"><div>${payDate.jp}</div><div class="text-blue-600 text-[11px] font-bold">(${payDate.ad})</div></td><td class="border-r border-black px-2 font-black text-lg w-32"><div class="text-[10px] font-normal text-slate-400 mb-1">(健保)</div>${val1}千円</td><td class="border-r border-black px-2 font-black text-lg w-32"><div class="text-[10px] font-normal text-slate-400 mb-1">(厚年)</div>${val2}千円</td><td class="border-r border-black"><div>${birthDate.jp}</div><div class="text-emerald-600 text-[11px] font-bold">(${birthDate.ad})</div></td><td>${normalize(r["種別"] || "")}</td></tr>`;
                 }).join('')}</tbody>
             </table>
