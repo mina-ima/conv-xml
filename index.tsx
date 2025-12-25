@@ -90,7 +90,7 @@ const parseStandardAmount = (val: string): number => {
 const calculateAge = (birthDateAD: string): number => {
     if (!birthDateAD) return 0;
     const birth = new Date(birthDateAD);
-    const today = new Date();
+    const today = new Date(); // 実務上は徴収月基準だが、簡易シミュレータとして現在日付
     let age = today.getFullYear() - birth.getFullYear();
     const m = today.getMonth() - birth.getMonth();
     if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) {
@@ -282,8 +282,11 @@ const downloadCSV = () => {
         const birthDate = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]).ad;
         let amtH = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
         let amtP = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
-        // ユーザー指示に基づき、月額（!isBonus）の場合は千円単位から円単位に変換
-        if (!isBonus) { amtH *= 1000; amtP *= 1000; }
+        
+        // 全て千円単位として扱う指示に従い1000倍
+        amtH *= 1000;
+        amtP *= 1000;
+        
         return [normalize(r["被保険者整理番号"]), `"${normalize(r["被保険者氏名"])}"`, payDate, amtH, amtP, birthDate, normalize(r["種別"])].join(",");
     })].join("\n");
     const blob = new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8;' });
@@ -423,7 +426,8 @@ const renderNoticeSheet = (data: UniversalData) => {
                     const birthDate = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]);
                     const val1 = normalize(r[isBonusDoc ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
                     const val2 = normalize(r[isBonusDoc ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
-                    return `<tr class="h-20 text-center border-b border-black"><td class="border-r border-black">${normalize(r["被保険者整理番号"] || "")}</td><td class="border-r border-black text-left px-6 font-black text-xl">${normalize(r["被保険者氏名"] || "")}</td><td class="border-r border-black"><div>${payDate.jp}</div><div class="text-blue-600 text-[11px] font-bold">(${payDate.ad})</div></td><td class="border-r border-black px-2 font-black text-lg w-32"><div class="text-[10px] font-normal text-slate-400 mb-1">(健保)</div>${val1}</td><td class="border-r border-black px-2 font-black text-lg w-32"><div class="text-[10px] font-normal text-slate-400 mb-1">(厚年)</div>${val2}</td><td class="border-r border-black"><div>${birthDate.jp}</div><div class="text-emerald-600 text-[11px] font-bold">(${birthDate.ad})</div></td><td>${normalize(r["種別"] || "")}</td></tr>`;
+                    // 指示通り通知書には「千円」単位を明示
+                    return `<tr class="h-20 text-center border-b border-black"><td class="border-r border-black">${normalize(r["被保険者整理番号"] || "")}</td><td class="border-r border-black text-left px-6 font-black text-xl">${normalize(r["被保険者氏名"] || "")}</td><td class="border-r border-black"><div>${payDate.jp}</div><div class="text-blue-600 text-[11px] font-bold">(${payDate.ad})</div></td><td class="border-r border-black px-2 font-black text-lg w-32"><div class="text-[10px] font-normal text-slate-400 mb-1">(健保)</div>${val1}千円</td><td class="border-r border-black px-2 font-black text-lg w-32"><div class="text-[10px] font-normal text-slate-400 mb-1">(厚年)</div>${val2}千円</td><td class="border-r border-black"><div>${birthDate.jp}</div><div class="text-emerald-600 text-[11px] font-bold">(${birthDate.ad})</div></td><td>${normalize(r["種別"] || "")}</td></tr>`;
                 }).join('')}</tbody>
             </table>
             <div class="mt-20 text-right space-y-4"><p class="text-lg font-bold underline underline-offset-4 decoration-slate-300">${data.creationDateJP || ''}</p><div class="pt-6"><p class="text-2xl font-black tracking-[0.3em]">日本年金機構理事長</p><p class="text-lg font-bold text-slate-600">(${data.pensionOffice || ''}年金事務所)</p></div></div>
@@ -431,7 +435,7 @@ const renderNoticeSheet = (data: UniversalData) => {
     `;
 };
 
-// --- Rendering: Updated Calculator View (Accuracy Fix) ---
+// --- Rendering: Updated Calculator View ---
 const renderCalculatorView = (data: UniversalData) => {
     const isBonus = data.docType === 'BONUS_NOTICE';
     return `
@@ -466,20 +470,19 @@ const renderCalculatorView = (data: UniversalData) => {
                         const birthData = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]);
                         const age = calculateAge(birthData.ad);
                         
-                        // 数値パース
+                        // 数値パース。指示に従いXMLの値（千円単位）を円単位に変換
                         const rawAmtH = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
                         const rawAmtP = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
                         
-                        // 標準額の「千円単位」から「円単位」への変換ロジック
-                        // 月額届出の場合（isBonus=false）は千円単位。賞与の場合は円単位。
-                        const amtH = isBonus ? rawAmtH : rawAmtH * 1000;
-                        const amtP = isBonus ? rawAmtP : rawAmtP * 1000;
+                        // 全ての標準額を一律1000倍して円単位で計算
+                        const amtH = rawAmtH * 1000;
+                        const amtP = rawAmtP * 1000;
 
-                        // 介護保険料の自動判定ロジック (日本の社会保険法に基づき 40歳以上64歳以下を対象)
+                        // 介護保険料の自動判定ロジック (40歳以上64歳以下を対象)
                         const isNursingTargetAge = age >= 40 && age <= 64;
                         const isNursingActive = state.rates.isNursingTarget ? isNursingTargetAge : false;
 
-                        // 控除額計算 (折半: 標準的な切捨て処理)
+                        // 控除額計算 (折半)
                         const hDeduct = Math.floor(amtH * (state.rates.health / 100) / 2);
                         const pDeduct = Math.floor(amtP * (state.rates.pension / 100) / 2);
                         const nDeduct = isNursingActive ? Math.floor(amtH * (state.rates.nursing / 100) / 2) : 0;
@@ -500,9 +503,9 @@ const renderCalculatorView = (data: UniversalData) => {
                 </tbody>
             </table>
             <div class="mt-6 p-4 bg-gray-50 rounded-xl border border-gray-100 text-[11px] text-gray-500 space-y-1">
-                <p class="font-bold text-slate-700">【算出方法について】</p>
-                <p>※1. <b>標準額の換算:</b> 報酬月額通知の場合、XML上の値（千円単位）を1,000倍して円単位で算出しています。</p>
-                <p>※2. <b>介護保険料:</b> 日本の制度に基づき、40歳から64歳までの被保険者を自動判定して算出しています。</p>
+                <p class="font-bold text-slate-700">【計算根拠について】</p>
+                <p>※1. <b>単位換算:</b> XML内の標準額（千円単位）を1,000倍して円単位として算出しています。</p>
+                <p>※2. <b>介護保険料:</b> 年齢が40歳以上64歳以下の被保険者を自動判定して個別に算出しています。</p>
                 <p>※3. <b>端数処理:</b> 各項目ごとに端数は切捨て処理を行っています。端数処理設定（50銭等）により数円の誤差が出る場合があります。</p>
             </div>
         </div>
