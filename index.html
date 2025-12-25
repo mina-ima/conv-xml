@@ -7,6 +7,14 @@
     <title>e-Gov XML Reader & 保険料計算機</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+    <script>
+        // ブラウザ実行環境でのprocess.envエラーを防止するため、スクリプトの読み込み前に定義
+        window.process = { 
+            env: { 
+                API_KEY: "" 
+            } 
+        };
+    </script>
     <style>
         body {
             font-family: 'Inter', 'Noto Sans JP', sans-serif;
@@ -38,9 +46,6 @@
     "react/": "https://esm.sh/react@^19.2.3/"
   }
 }
-</script>
-<script>
-    window.process = window.process || { env: { API_KEY: "" } };
 </script>
 </head>
 <body class="bg-[#f8fafc] text-slate-900">
