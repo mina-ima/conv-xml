@@ -3,7 +3,8 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { AnalysisResult } from "../types";
 
 export const analyzeXMLContent = async (xmlString: string): Promise<AnalysisResult> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+  // Fix: Use process.env.API_KEY directly as per guidelines
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   const MAX_CHAR_LIMIT = 500000;
   const contentSnippet = xmlString.length > MAX_CHAR_LIMIT 
@@ -64,6 +65,7 @@ export const analyzeXMLContent = async (xmlString: string): Promise<AnalysisResu
   });
 
   try {
+    // Fix: Access response.text directly as a property
     const text = response.text || '';
     return JSON.parse(text.trim());
   } catch (error) {

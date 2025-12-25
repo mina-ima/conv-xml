@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -7,53 +6,40 @@
     <title>e-Gov XML Reader & 保険料計算機</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+    <!-- Lucide Icons (CDN経由でグローバルに使用) -->
+    <script src="https://unpkg.com/lucide@latest"></script>
     <script>
-        // process.env を必要とするライブラリのための最小限のモック
+        // APIキー等の環境変数のモック
         window.process = { env: { API_KEY: "" } };
     </script>
     <style>
-        body {
-            font-family: 'Inter', 'Noto Sans JP', sans-serif;
-        }
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-        ::-webkit-scrollbar-track {
-            background: #f1f5f9;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: #cbd5e1;
-            border-radius: 4px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: #94a3b8;
-        }
+        body { font-family: 'Inter', 'Noto Sans JP', sans-serif; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .spin { animation: spin 1s linear infinite; }
+        .xml-node { margin-left: 1rem; border-left: 1px solid #e2e8f0; padding-left: 0.5rem; }
     </style>
-<script type="importmap">
+    <script type="importmap">
 {
   "imports": {
-    "react": "https://esm.sh/react@19.0.0",
-    "react/": "https://esm.sh/react@19.0.0/",
-    "react-dom": "https://esm.sh/react-dom@19.0.0",
-    "react-dom/": "https://esm.sh/react-dom@19.0.0/",
-    "react-dom/client": "https://esm.sh/react-dom@19.0.0/client",
-    "lucide-react": "https://esm.sh/lucide-react@0.468.0?deps=react@19.0.0",
-    "@google/genai": "https://esm.sh/@google/genai@0.21.0"
+    "@google/genai": "https://esm.sh/@google/genai@0.21.0",
+    "react": "https://esm.sh/react@^19.2.3",
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "lucide-react": "https://esm.sh/lucide-react@^0.562.0"
   }
 }
 </script>
 </head>
 <body class="bg-[#f8fafc] text-slate-900">
     <div id="root">
-        <div style="display: flex; justify-content: center; align-items: center; height: 100vh; font-family: sans-serif; color: #64748b; flex-direction: column; gap: 16px;">
-            <div style="width: 40px; height: 40px; border: 4px solid #e2e8f0; border-top: 4px solid #2563eb; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-            アプリを起動しています...
+        <div class="flex flex-col items-center justify-center h-screen gap-4 text-slate-500">
+            <div class="w-10 h-10 border-4 border-slate-200 border-t-blue-600 rounded-full spin"></div>
+            <p class="font-bold text-slate-600">システムを起動しています...</p>
         </div>
     </div>
-    <style>
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-    </style>
-    <script type="module" src="index.tsx"></script>
+    <!-- システムによって自動的に index.tsx が実行されます -->
 </body>
 </html>
