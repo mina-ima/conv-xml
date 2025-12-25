@@ -1,0 +1,5 @@
+{
+  "name": "e-Gov XML Reader & Assistant",
+  "description": "e-GovからダウンロードしたXMLファイルを読みやすく表示し、AI（Gemini）がその内容を分かりやすく解説するツールです。",
+  "requestFramePermissions": []
+}
