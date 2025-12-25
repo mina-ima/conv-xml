@@ -82,39 +82,39 @@ const localExtractData = (node: XMLNode): AnalysisResult => {
     };
     collectAll(node);
 
-    // 2. 表（明細）となる部分を特定
+    // 2. 表（明細）となる部分を特定（複数回繰り返されるタグを優先）
     const findTable = (n: XMLNode) => {
         if (n.children.length >= 1) {
             const counts: Record<string, number> = {};
             n.children.forEach(c => { counts[c.name] = (counts[c.name] || 0) + 1; });
 
             for (const [tagName, count] of Object.entries(counts)) {
-                if (count >= 1) {
-                    const currentRows: any[] = [];
-                    const currentHeaderSet = new Set<string>();
-                    const targets = n.children.filter(c => c.name === tagName);
+                // 1回以上出現するものを候補とするが、複数回を優先的に評価
+                const currentRows: any[] = [];
+                const currentHeaderSet = new Set<string>();
+                const targets = n.children.filter(c => c.name === tagName);
 
-                    targets.forEach(record => {
-                        const rowData: Record<string, string> = {};
-                        const flatten = (fn: XMLNode, prefix = "") => {
-                            if (fn.children.length === 0) {
-                                const key = prefix + fn.name;
-                                rowData[key] = fn.content || "";
-                                currentHeaderSet.add(key);
-                            } else {
-                                fn.children.forEach(c => flatten(c, fn.name + "_"));
-                            }
-                        };
-                        flatten(record);
-                        if (Object.keys(rowData).length > 0) currentRows.push(rowData);
-                    });
+                targets.forEach(record => {
+                    const rowData: Record<string, string> = {};
+                    const flatten = (fn: XMLNode, prefix = "") => {
+                        if (fn.children.length === 0) {
+                            const key = prefix + fn.name;
+                            rowData[key] = fn.content || "";
+                            currentHeaderSet.add(key);
+                        } else {
+                            fn.children.forEach(c => flatten(c, fn.name + "_"));
+                        }
+                    };
+                    flatten(record);
+                    if (Object.keys(rowData).length > 0) currentRows.push(rowData);
+                });
 
-                    const score = currentRows.length * currentHeaderSet.size;
-                    if (score > maxTableScore) {
-                        maxTableScore = score;
-                        bestRows = currentRows;
-                        bestHeaderSet = currentHeaderSet;
-                    }
+                // スコア計算：行数 × 項目数
+                const score = currentRows.length * currentHeaderSet.size;
+                if (score > maxTableScore) {
+                    maxTableScore = score;
+                    bestRows = currentRows;
+                    bestHeaderSet = currentHeaderSet;
                 }
             }
         }
@@ -135,7 +135,7 @@ const localExtractData = (node: XMLNode): AnalysisResult => {
     const headers = Array.from(bestHeaderSet);
     const formattedRows = bestRows.map(r => headers.map(h => r[h] || ""));
 
-    // タイトルの決定
+    // タイトルの決定（XMLタグ名や共通情報から推測）
     let title = "e-Gov 通知書";
     if (node.name.includes("通知書")) title = node.name;
     const possibleTitles = ["タイトル", "帳票名", "DocumentTitle"];
@@ -145,17 +145,18 @@ const localExtractData = (node: XMLNode): AnalysisResult => {
         title,
         commonInfo,
         tableData: {
-            headers: headers.map(h => h.replace(/.*_/, "")),
+            headers: headers.map(h => h.replace(/.*_/, "")), // 表示用にネストを解消
             rows: formattedRows
         }
     };
 };
 
-// --- Calculator ---
+// --- Premium Calculator ---
 const calculatePremiums = () => {
     if (!state.analysis?.tableData) return [];
     const { headers, rows } = state.analysis.tableData;
     
+    // キーワードによるカラムの特定
     const findIdx = (keywords: string[]) => headers.findIndex(h => keywords.some(k => h.includes(k)));
     
     const hIdx = findIdx(["健保", "健康保険", "標準額", "標準報酬", "賞与額"]);
@@ -174,6 +175,7 @@ const calculatePremiums = () => {
         const pensionAmount = parseValue(row[pIdx]);
         
         const birthStr = row[bIdx] || "";
+        // 40歳以上介護保険対象判定
         const isNursing = birthStr.includes("S") || birthStr.includes("19") || (birthStr.includes("H") && parseInt(birthStr.replace(/[^0-9]/g, '')) < 10);
 
         const healthPremium = Math.floor((healthAmount * (state.rates.health / 100)) / 2);
@@ -187,7 +189,7 @@ const calculatePremiums = () => {
     });
 };
 
-// --- Renderer ---
+// --- UI Renderer ---
 const render = () => {
     const root = document.getElementById('root');
     if (!root) return;
@@ -195,8 +197,8 @@ const render = () => {
     if (!state.xmlContent) {
         root.innerHTML = `
             <div class="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-4">
-                <div class="bg-white p-12 rounded-[3rem] shadow-2xl border border-slate-200 w-full max-w-2xl text-center transform transition-all">
-                    <div class="bg-gradient-to-br from-blue-600 to-indigo-700 w-24 h-24 rounded-[2rem] flex items-center justify-center mx-auto mb-10 text-white shadow-xl rotate-3">
+                <div class="bg-white p-12 rounded-[3.5rem] shadow-2xl border border-slate-200 w-full max-w-2xl text-center">
+                    <div class="bg-gradient-to-br from-blue-600 to-indigo-700 w-24 h-24 rounded-[2.2rem] flex items-center justify-center mx-auto mb-10 text-white shadow-xl rotate-3">
                         <i data-lucide="file-digit" size="48"></i>
                     </div>
                     <h2 class="text-4xl font-black mb-6 text-slate-900 tracking-tight">e-Gov XML 閲覧・計算</h2>
@@ -238,8 +240,8 @@ const render = () => {
                             </button>
                             <div class="h-6 w-px bg-slate-200"></div>
                             <div class="flex gap-1 bg-slate-100 p-1.5 rounded-2xl">
-                                <button id="viewSummary" class="px-6 py-2 rounded-xl text-xs font-black transition-all ${state.viewMode === 'summary' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500 hover:text-slate-800'}">ドキュメント</button>
-                                <button id="viewTree" class="px-6 py-2 rounded-xl text-xs font-black transition-all ${state.viewMode === 'tree' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500 hover:text-slate-800'}">Rawデータ</button>
+                                <button id="viewSummary" class="px-6 py-2 rounded-xl text-xs font-black transition-all ${state.viewMode === 'summary' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500 hover:text-slate-800'}">帳票表示</button>
+                                <button id="viewTree" class="px-6 py-2 rounded-xl text-xs font-black transition-all ${state.viewMode === 'tree' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500 hover:text-slate-800'}">構造確認</button>
                             </div>
                         </div>
                     </div>
@@ -250,13 +252,13 @@ const render = () => {
                         <div class="mb-12 p-10 bg-white rounded-[2rem] border-2 border-blue-50 shadow-2xl animate-in zoom-in-95 duration-300">
                             <div class="flex items-center gap-3 mb-8">
                                 <div class="w-2 h-8 bg-blue-600 rounded-full"></div>
-                                <h3 class="text-xl font-black text-slate-900">健康保険・厚生年金保険料率（本人負担分）</h3>
+                                <h3 class="text-xl font-black text-slate-900">健康保険・厚生年金保険料率設定</h3>
                             </div>
                             <div class="grid grid-cols-1 md:grid-cols-3 gap-10">
                                 ${Object.entries(state.rates).map(([key, val]) => `
                                     <div class="space-y-3">
                                         <label class="block text-xs font-black text-slate-400 uppercase tracking-widest ml-1">
-                                            ${key === 'health' ? '健康保険料率 (%)' : key === 'pension' ? '厚生年金保険料率 (%)' : '介護保険料率 (%)'}
+                                            ${key === 'health' ? '健康保険 (%)' : key === 'pension' ? '厚生年金 (%)' : '介護保険 (%)'}
                                         </label>
                                         <div class="relative">
                                             <input type="number" step="0.001" value="${val}" data-key="${key}" class="rate-input w-full p-5 bg-slate-50 border-2 border-transparent focus:border-blue-500 focus:bg-white rounded-2xl font-mono text-2xl font-black text-slate-900 outline-none transition-all" />
@@ -265,10 +267,7 @@ const render = () => {
                                     </div>
                                 `).join('')}
                             </div>
-                            <div class="mt-8 flex items-center gap-2 text-slate-400 bg-slate-50 p-4 rounded-xl">
-                                <i data-lucide="info" size="16"></i>
-                                <p class="text-[11px] font-bold">※事業主と被保険者が折半で負担する場合の「本人負担分」の料率を入力してください。デフォルトは一般的な折半後の料率目安です。</p>
-                            </div>
+                            <p class="mt-6 text-[11px] font-bold text-slate-400 bg-slate-50 p-4 rounded-xl">※各料率を1/2した額（本人負担分）として計算します。設定値は保存されません。</p>
                         </div>
                     ` : ''}
 
@@ -280,19 +279,19 @@ const render = () => {
                                 <div class="w-24 h-1.5 bg-blue-600 mx-auto rounded-full"></div>
                             </div>
 
-                            <!-- Common Info Cards -->
-                            <div class="p-10 bg-slate-50/50 border-b border-slate-100 grid grid-cols-2 md:grid-cols-4 gap-6">
+                            <!-- Common Info Cards (固定項目をここに表示) -->
+                            <div class="p-8 bg-slate-50/50 border-b border-slate-100 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                                 ${Object.entries(state.analysis?.commonInfo || {}).map(([key, val]) => `
                                     <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
                                         <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">${key}</p>
                                         <p class="text-base font-bold text-slate-800">${val}</p>
                                     </div>
                                 `).join('')}
-                                ${Object.keys(state.analysis?.commonInfo || {}).length === 0 ? '<p class="col-span-full text-center text-slate-400 text-sm font-bold italic">共通情報は検出されませんでした。</p>' : ''}
+                                ${Object.keys(state.analysis?.commonInfo || {}).length === 0 ? '<p class="col-span-full text-center text-slate-400 text-sm italic py-4">共通情報は検出されませんでした。</p>' : ''}
                             </div>
 
-                            <!-- Table Area -->
-                            <div class="overflow-x-auto p-2">
+                            <!-- Table Area (明細のみを表示) -->
+                            <div class="overflow-x-auto">
                                 <table class="w-full text-left whitespace-nowrap">
                                     <thead>
                                         <tr class="bg-slate-900 text-white">
@@ -319,7 +318,7 @@ const render = () => {
                             <div class="p-10 bg-slate-900 flex justify-between items-center text-white">
                                 <div>
                                     <p class="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] mb-1">Row Count</p>
-                                    <p class="text-2xl font-black">${results.length} 件のデータ</p>
+                                    <p class="text-2xl font-black">${results.length} 名分のデータ</p>
                                 </div>
                                 <button id="downloadCsv" class="group px-8 py-4 bg-blue-600 hover:bg-white hover:text-blue-600 text-white rounded-2xl font-black transition-all shadow-xl flex items-center gap-3 active:scale-95">
                                     <i data-lucide="download" size="20"></i>
@@ -374,7 +373,7 @@ const handleFile = (e: Event) => {
             state.analysis = localExtractData(state.parsedNode);
             render();
         } catch (err) {
-            alert("XMLの解析に失敗しました。正しいXMLファイルか確認してください。");
+            alert("XMLの解析に失敗しました。ファイル形式を確認してください。");
         }
     };
     reader.readAsText(file);
@@ -409,7 +408,7 @@ const attachEvents = () => {
         const blob = new Blob([csv], { type: 'text/csv' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = `egov_data_${new Date().getTime()}.csv`;
+        a.download = `egov_export_${new Date().getTime()}.csv`;
         a.click();
     });
 };
