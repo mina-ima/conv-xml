@@ -12,10 +12,8 @@ interface XMLNode {
 interface UniversalData {
     docType: 'SUMMARY' | 'NOTICE' | 'ANNOUNCEMENT' | 'BONUS_NOTICE';
     title: string;
-    // Common fields
     creationDateJP?: string;
     docNo?: string;
-    // Summary fields
     idInfoPrefix?: string;
     idInfoSuffix?: string;
     officeRegistry?: { pref: string, dist: string, code: string };
@@ -32,7 +30,6 @@ interface UniversalData {
     paperNoticeDesired?: boolean;
     proxyName?: string;
     remarks?: string;
-    // Notice fields
     arrivalNumber?: string;
     noticeBox?: string;
     rows: any[];
@@ -41,12 +38,11 @@ interface UniversalData {
     pensionOffice?: string;
     noticeMgmtNo?: string;
     noticeMgmtBranch?: string;
-    // Announcement fields
     senderAff?: string;
     senderName?: string;
     mainText?: string[];
-    appendixTitle?: string;
-    externalUrl?: string;
+    appendices?: { title: string, text?: string }[];
+    recipient?: { aff?: string, name?: string, honorific?: string };
 }
 
 interface AppFile {
@@ -71,12 +67,11 @@ const state = {
     viewMode: 'summary' as 'summary' | 'tree' | 'calculator',
     isLoading: false,
     loadingMsg: "",
-    // Default Insurance Rates (Approximate averages)
     rates: { 
-        health: 10.0, // Health Insurance Rate (%)
-        pension: 18.3, // Welfare Pension Rate (%)
-        nursing: 1.6, // Nursing Care Rate (%)
-        isNursingTarget: false
+        health: 10.0,
+        pension: 18.3,
+        nursing: 1.6,
+        isNursingTarget: true
     }
 };
 
@@ -87,11 +82,21 @@ const normalize = (val: any): string => {
 };
 
 const parseStandardAmount = (val: string): number => {
+    if (!val) return 0;
     const cleaned = normalize(val).replace(/[^0-9]/g, "");
-    const num = parseInt(cleaned, 10);
-    if (isNaN(num)) return 0;
-    // Handle "千円" if present in string but already normalized or not
-    return val.includes("千円") ? num * 1000 : num;
+    return parseInt(cleaned, 10) || 0;
+};
+
+const calculateAge = (birthDateAD: string): number => {
+    if (!birthDateAD) return 0;
+    const birth = new Date(birthDateAD);
+    const today = new Date();
+    let age = today.getFullYear() - birth.getFullYear();
+    const m = today.getMonth() - birth.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) {
+        age--;
+    }
+    return age;
 };
 
 const ERA_MAP: Record<string, string> = { "1": "明治", "3": "大正", "5": "昭和", "7": "平成", "9": "令和", "S": "昭和", "H": "平成", "R": "令和" };
@@ -109,7 +114,7 @@ const getFormattedDates = (g: any, y: any, m: any, d: any = "1") => {
     const eraChar = gn.length === 1 && !isNaN(parseInt(gn)) ? (gn === "9" ? "R" : gn === "7" ? "H" : gn === "5" ? "S" : gn) : gn;
     
     return {
-        ad: `${yearAD}/${String(mn)}/${String(dn)}`,
+        ad: `${yearAD}/${String(mn).padStart(2, '0')}/${String(dn).padStart(2, '0')}`,
         jp: `${eraChar}${String(yn).padStart(2, '0')}.${String(mn).padStart(2, '0')}.${String(dn).padStart(2, '0')}`,
         fullJp: `${eraName} ${yn} 年 ${mn} 月 ${dn} 日`
     };
@@ -119,19 +124,53 @@ const getFormattedDates = (g: any, y: any, m: any, d: any = "1") => {
 const extractDetailed = (node: XMLNode): UniversalData | null => {
     const dataMap: Record<string, any> = {};
     const mainText: string[] = [];
-    let appendixTitle = "";
-    let externalUrl = "";
+    const appendices: { title: string, text?: string }[] = [];
+    let recipient: any = {};
+    let author: any = {};
 
     const traverse = (n: XMLNode) => {
         if (n.content !== undefined && n.content !== "") {
             dataMap[n.name] = n.content;
-            if (n.name === "P") mainText.push(n.content);
-            if (n.name === "APPTITLE") appendixTitle = n.content;
-            if (n.name === "a") externalUrl = n.content;
+        }
+        if (n.name === "P") {
+            if (n.content) mainText.push(n.content);
+        }
+        if (n.name === "APPENDIX") {
+            const titleNode = n.children.find(c => c.name === "APPTITLE");
+            if (titleNode && titleNode.content) {
+                appendices.push({ 
+                    title: titleNode.content,
+                    text: n.children.find(c => c.name === "APPTEXT")?.content
+                });
+            }
+        }
+        if (n.name === "TO") {
+            recipient.aff = n.children.find(c => c.name === "AFF")?.content;
+            recipient.name = n.children.find(c => c.name === "NAME")?.content;
+            recipient.honorific = n.children.find(c => c.name === "HONORIFC")?.content;
+        }
+        if (n.name === "AUTHOR") {
+            author.aff = n.children.find(c => c.name === "AFF")?.content;
+            author.name = n.children.find(c => c.name === "NAME")?.content;
         }
         n.children.forEach(traverse);
     };
     traverse(node);
+
+    if (node.name === "DOC" || dataMap["TITLE"] === "日本年金機構からのお知らせ") {
+        return {
+            docType: 'ANNOUNCEMENT',
+            title: dataMap["TITLE"] || "日本年金機構からのお知らせ",
+            docNo: dataMap["DOCNO"] || "",
+            creationDateJP: dataMap["DATE"] || "",
+            recipient: recipient,
+            senderAff: author.aff || "",
+            senderName: author.name || "",
+            mainText: mainText,
+            appendices: appendices,
+            rows: []
+        };
+    }
 
     if (dataMap["識別情報x提出元ID"] || dataMap["届書総件数x届書合計"] || node.name === "DataRoot") {
         const targetNode = node.children.find(c => c.name.includes("-001_1")) || node;
@@ -181,7 +220,7 @@ const extractDetailed = (node: XMLNode): UniversalData | null => {
             remarks: dataMap["備考"] || "",
             counts: {
                 "資格取得": dataMap["届書総件数x資格取得届70歳以上被用者該当届"] || "",
-                "被扶養者": dataMap["届書数x被扶養者異動国年3号被保険者関係届"] || "",
+                "被扶養者": dataMap["届書数x被扶養者異動届国年3号被保険者関係届"] || "",
                 "資格喪失": dataMap["届書数x資格喪失届70歳以上被用者不該当届"] || "",
                 "月額変更": dataMap["届書数x月額変更届70歳以上被用者月額変更届"] || "",
                 "算定基礎": dataMap["届書数x算定基礎届70歳以上被用者算定基礎届"] || "",
@@ -228,146 +267,72 @@ const extractDetailed = (node: XMLNode): UniversalData | null => {
             noticeMgmtBranch: h["通知管理番号枝番"] || "",
         };
     }
-
-    if (mainText.length > 0 || dataMap["TITLE"] || dataMap["タイトル"]) {
-        return {
-            docType: 'ANNOUNCEMENT',
-            title: dataMap["TITLE"] || dataMap["タイトル"] || "お知らせ",
-            mainText: mainText,
-            appendixTitle: appendixTitle,
-            externalUrl: externalUrl,
-            creationDateJP: dataMap["作成年月日"] || dataMap["DATE"] || "",
-            senderAff: dataMap["差出人所属"] || "",
-            senderName: dataMap["差出人名"] || "",
-            rows: []
-        };
-    }
-
     return null;
 };
 
 // --- Export Functions ---
 const downloadCSV = () => {
-    const cur = state.cases[state.selectedCaseIdx]?.files[state.selectedFileIdx];
-    const data = cur?.analysis;
-    if (!data || !data.rows.length) return;
-
+    const data = state.cases[state.selectedCaseIdx]?.files[state.selectedFileIdx]?.analysis;
+    if (!data) return;
     const isBonus = data.docType === 'BONUS_NOTICE';
-    const headers = [
-        "整理番号", "氏名", "支払年月日/適用年月", "標準報酬/賞与(健保)", "標準報酬/賞与(厚年)", "生年月日", "種別"
-    ];
-
-    const csvContent = [
-        headers.join(","),
-        ...data.rows.map(r => {
-            const datePrefix = isBonus ? "賞与支払年月日" : "適用年月";
-            const payDate = getFormattedDates(r[`${datePrefix}_元号`], r[`${datePrefix}_年`], r[`${datePrefix}_月`], r[`${datePrefix}_日`] || "1").ad;
-            const birthDate = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]).ad;
-            return [
-                normalize(r["被保険者整理番号"]),
-                `"${normalize(r["被保険者氏名"])}"`,
-                payDate,
-                parseStandardAmount(r[isBonus ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]),
-                parseStandardAmount(r[isBonus ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]),
-                birthDate,
-                normalize(r["種別"])
-            ].join(",");
-        })
-    ].join("\n");
-
-    const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const h = ["整理番号", "氏名", "支払日/適用月", "標準額(健保)", "標準額(厚年)", "生年月日", "種別"];
+    const csv = [h.join(","), ...data.rows.map(r => {
+        const datePrefix = isBonus ? "賞与支払年月日" : "適用年月";
+        const payDate = getFormattedDates(r[`${datePrefix}_元号`], r[`${datePrefix}_年`], r[`${datePrefix}_月`], r[`${datePrefix}_日`] || "1").ad;
+        const birthDate = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]).ad;
+        let amtH = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
+        let amtP = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
+        // ユーザー指示に基づき、月額（!isBonus）の場合は千円単位から円単位に変換
+        if (!isBonus) { amtH *= 1000; amtP *= 1000; }
+        return [normalize(r["被保険者整理番号"]), `"${normalize(r["被保険者氏名"])}"`, payDate, amtH, amtP, birthDate, normalize(r["種別"])].join(",");
+    })].join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.setAttribute("download", `${data.title}_${new Date().getTime()}.csv`);
-    document.body.appendChild(link);
+    link.download = `${data.title}.csv`;
     link.click();
-    document.body.removeChild(link);
 };
 
-// --- Calculation Functions ---
-const calculateDeductions = (standardAmount: number, rate: number, isHalf: boolean = true) => {
-    const total = Math.floor(standardAmount * (rate / 100));
-    return isHalf ? Math.floor(total / 2) : total;
-};
-
-// --- Rendering: Calculator View ---
-const renderCalculatorView = (data: UniversalData) => {
-    const isBonus = data.docType === 'BONUS_NOTICE';
-    
+// --- Rendering: Announcement Sheet (お知らせ) ---
+const renderAnnouncementSheet = (data: UniversalData) => {
     return `
-        <div class="bg-white w-[1100px] min-h-[1000px] p-12 text-black shadow-2xl font-['Noto_Sans_JP'] border border-gray-300 mx-auto rounded-3xl">
-            <div class="flex justify-between items-center mb-10 border-b pb-6">
-                <div>
-                    <h2 class="text-3xl font-black text-slate-900">${data.title} - 控除額計算</h2>
-                    <p class="text-slate-500 mt-2 font-medium">個人負担分の社会保険料シミュレーター</p>
-                </div>
-                <div class="bg-blue-50 p-6 rounded-2xl border border-blue-100 grid grid-cols-2 gap-x-8 gap-y-2">
-                    <div class="flex flex-col">
-                        <label class="text-[11px] font-bold text-blue-600 mb-1">健康保険料率 (%)</label>
-                        <input type="number" step="0.001" value="${state.rates.health}" class="bg-white border border-blue-200 rounded-lg px-3 py-1 text-sm font-bold text-blue-900 focus:ring-2 focus:ring-blue-400" id="rate-health">
-                    </div>
-                    <div class="flex flex-col">
-                        <label class="text-[11px] font-bold text-blue-600 mb-1">厚生年金料率 (%)</label>
-                        <input type="number" step="0.001" value="${state.rates.pension}" class="bg-white border border-blue-200 rounded-lg px-3 py-1 text-sm font-bold text-blue-900 focus:ring-2 focus:ring-blue-400" id="rate-pension">
-                    </div>
-                    <div class="flex flex-col mt-2">
-                        <label class="text-[11px] font-bold text-blue-600 mb-1">介護保険料率 (%)</label>
-                        <input type="number" step="0.001" value="${state.rates.nursing}" class="bg-white border border-blue-200 rounded-lg px-3 py-1 text-sm font-bold text-blue-900 focus:ring-2 focus:ring-blue-400" id="rate-nursing">
-                    </div>
-                    <div class="flex items-center gap-3 mt-4">
-                        <input type="checkbox" id="calc-nursing" ${state.rates.isNursingTarget ? 'checked' : ''} class="w-5 h-5 accent-blue-600">
-                        <label class="text-[12px] font-bold text-blue-800" for="calc-nursing">介護保険を含める</label>
-                    </div>
-                </div>
+        <div class="bg-white w-[1000px] min-h-[1414px] p-24 text-black shadow-2xl relative font-['Noto_Sans_JP'] border border-slate-200 mx-auto">
+            <div class="flex flex-col items-end text-lg font-bold mb-8">
+                <p>${data.docNo || ''}</p>
+                <p>${data.creationDateJP || ''}</p>
+            </div>
+            
+            <div class="mb-16">
+                <p class="text-xl font-bold">${data.recipient?.aff || ''}</p>
+                <p class="text-xl font-bold">${data.recipient?.name || ''}　${data.recipient?.honorific || ''}</p>
             </div>
 
-            <table class="w-full border-collapse border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                <thead class="bg-slate-900 text-white">
-                    <tr class="h-14">
-                        <th class="px-4 text-left font-bold text-sm">氏名</th>
-                        <th class="px-4 text-right font-bold text-sm">標準額</th>
-                        <th class="px-4 text-right font-bold text-sm bg-blue-800">健康保険料</th>
-                        <th class="px-4 text-right font-bold text-sm bg-indigo-800">厚生年金保険料</th>
-                        <th class="px-4 text-right font-bold text-sm bg-emerald-800">合計(控除額)</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100">
-                    ${data.rows.map(r => {
-                        const amtHealth = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
-                        const amtPension = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
-                        
-                        const hIns = calculateDeductions(amtHealth, state.rates.health + (state.rates.isNursingTarget ? state.rates.nursing : 0));
-                        const pIns = calculateDeductions(amtPension, state.rates.pension);
-                        const total = hIns + pIns;
+            <div class="flex flex-col items-end mb-24">
+                <p class="text-lg font-bold">${data.senderAff || ''}</p>
+                <p class="text-lg font-bold">${data.senderName || ''}</p>
+            </div>
 
-                        return `
-                        <tr class="h-16 hover:bg-slate-50 transition-colors">
-                            <td class="px-6 font-black text-lg">${normalize(r["被保険者氏名"])}</td>
-                            <td class="px-6 text-right font-mono font-bold text-slate-500">${amtHealth.toLocaleString()} 円</td>
-                            <td class="px-6 text-right font-mono font-black text-blue-700 text-lg">${hIns.toLocaleString()} 円</td>
-                            <td class="px-6 text-right font-mono font-black text-indigo-700 text-lg">${pIns.toLocaleString()} 円</td>
-                            <td class="px-6 text-right font-mono font-black text-slate-900 text-xl bg-slate-50">${total.toLocaleString()} 円</td>
-                        </tr>
-                        `;
-                    }).join('')}
-                </tbody>
-            </table>
-            
-            <div class="mt-12 p-8 bg-amber-50 rounded-2xl border border-amber-100 text-amber-900 text-sm leading-relaxed">
-                <p class="font-bold flex items-center gap-2 mb-2"><i data-lucide="info" size="18"></i> 計算についての注意点</p>
-                <ul class="list-disc pl-5 space-y-1 opacity-80">
-                    <li>本シミュレーターの計算結果はあくまでも目安です。端数処理（切り捨て・四捨五入）により、実際の徴収額と数十円程度の差が生じる場合があります。</li>
-                    <li>賞与の場合、標準賞与額の1,000円未満を切り捨てた額に保険料率を乗じて計算しています。</li>
-                    <li>介護保険料は、40歳から64歳までの被保険者が対象となります。</li>
-                </ul>
+            <div class="text-center mb-16">
+                <h1 class="text-3xl font-black tracking-tight">${data.title}</h1>
+            </div>
+
+            <div class="text-lg leading-relaxed space-y-6 mb-16 text-justify">
+                ${(data.mainText || []).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('')}
+            </div>
+
+            <div class="space-y-4">
+                ${(data.appendices || []).map(app => `
+                    <div class="text-blue-600 font-black text-xl underline cursor-pointer hover:text-blue-800">
+                        ${app.title}
+                    </div>
+                `).join('')}
             </div>
         </div>
     `;
 };
 
-// --- Rendering: Summary Sheet (総括票) ---
+// --- Rendering: High-Fidelity Summary Sheet ---
 const renderSummarySheet = (data: UniversalData) => {
-    const rowClass = "h-[42px] border-b border-black flex items-center";
     const labelClass = "px-2 py-1 flex items-center h-full border-r border-black text-[11px] leading-tight font-bold";
     const countValClass = "flex-1 px-4 py-1 text-right text-[14px] font-mono tracking-wider";
 
@@ -379,31 +344,10 @@ const renderSummarySheet = (data: UniversalData) => {
                 <div class="border-2 border-black px-5 py-2 font-bold text-[18px]">電子申請用</div>
             </div>
             <div class="grid grid-cols-2 gap-x-20 gap-y-4 mb-8 text-[14px]">
-                <div class="flex items-center">
-                    <span class="w-[100px] font-bold">①識別情報</span>
-                    <div class="flex-1 flex items-center border-b border-black font-mono py-1">
-                        <span class="px-4">${data.idInfoPrefix}</span>
-                        <span class="mx-auto">－</span>
-                        <span class="px-4">${data.idInfoSuffix}</span>
-                    </div>
-                </div>
-                <div class="flex items-center">
-                    <span class="w-[100px] font-bold">②作成年月日</span>
-                    <span class="flex-1 px-4 font-bold border-b border-black text-center py-1">${data.creationDateJP}</span>
-                </div>
-                <div class="flex items-center">
-                    <span class="w-[120px] font-bold">③事業所整理記号</span>
-                    <div class="flex-1 flex items-center border-b border-black font-mono py-1">
-                        <span class="px-4">${data.officeRegistry?.pref}</span>
-                        <span class="px-4">${data.officeRegistry?.dist}</span>
-                        <span class="mx-auto">－</span>
-                        <span class="px-4">${data.officeRegistry?.code}</span>
-                    </div>
-                </div>
-                <div class="flex items-center">
-                    <span class="w-[100px] font-bold">④事業所番号</span>
-                    <span class="flex-1 px-4 font-mono border-b border-black text-center py-1">${data.officeNo}</span>
-                </div>
+                <div class="flex items-center"><span class="w-[100px] font-bold">①識別情報</span><div class="flex-1 flex items-center border-b border-black font-mono py-1"><span class="px-4">${data.idInfoPrefix}</span><span class="mx-auto">－</span><span class="px-4">${data.idInfoSuffix}</span></div></div>
+                <div class="flex items-center"><span class="w-[100px] font-bold">②作成年月日</span><span class="flex-1 px-4 font-bold border-b border-black text-center py-1">${data.creationDateJP}</span></div>
+                <div class="flex items-center"><span class="w-[120px] font-bold">③事業所整理記号</span><div class="flex-1 flex items-center border-b border-black font-mono py-1"><span class="px-4">${data.officeRegistry?.pref}</span><span class="px-4">${data.officeRegistry?.dist}</span><span class="mx-auto">－</span><span class="px-4">${data.officeRegistry?.code}</span></div></div>
+                <div class="flex items-center"><span class="w-[100px] font-bold">④事業所番号</span><span class="flex-1 px-4 font-mono border-b border-black text-center py-1">${data.officeNo}</span></div>
             </div>
             <div class="flex gap-4">
                 <div class="w-[40px] flex flex-col items-center text-[10px] leading-tight space-y-8 pt-4 font-bold select-none opacity-80" style="writing-mode: vertical-rl;">
@@ -434,34 +378,25 @@ const renderSummarySheet = (data: UniversalData) => {
                             </div>
                             <div class="mt-8 text-center text-[15px] font-bold">${data.submissionDateJP} 提出</div>
                         </div>
-                        <div class="w-[140px] flex flex-col">
-                            <p class="text-[12px] font-bold mb-1 text-center">⑯ 備考</p>
-                            <div class="flex-1 border-2 border-black p-4 text-[11px] leading-relaxed break-all">${data.remarks || ""}</div>
-                        </div>
+                        <div class="w-[140px] flex flex-col"><p class="text-[12px] font-bold mb-1 text-center">⑯ 備考</p><div class="flex-1 border-2 border-black p-4 text-[11px] leading-relaxed break-all">${data.remarks || ""}</div></div>
                     </div>
                 </div>
             </div>
             <div class="mt-12 flex gap-10">
                 <div class="flex-1 border-2 border-black p-8 text-[15px] font-bold space-y-6">
-                    <div class="flex items-center"><span class="w-[120px] flex items-center">⑰ 郵便番号</span><div class="flex items-baseline font-mono text-[18px]"><span class="mr-4">〒</span><span class="px-2">${data.zipCodePrefix}</span><span class="mx-4">－</span><span class="px-2">${data.zipCodeSuffix}</span></div></div>
-                    <div class="flex items-start"><span class="w-[120px] pt-1">事業所所在地</span><span class="flex-1 leading-relaxed pl-4">${data.address}</span></div>
-                    <div class="flex items-center"><span class="w-[120px]">事業所名称</span><span class="flex-1 pl-4">${data.companyName}</span></div>
-                    <div class="flex items-center"><span class="w-[120px]">事業主氏名</span><span class="flex-1 pl-4">${data.ownerName}</span></div>
+                    <div class="flex items-center"><span class="w-[120px]">⑰ 郵便番号</span><div class="flex items-baseline font-mono text-[18px]"><span class="mr-4">〒</span><span class="px-2">${data.zipCodePrefix}</span><span class="mx-4">－</span><span class="px-2">${data.zipCodeSuffix}</span></div></div>
+                    <div class="flex items-start"><span class="w-[120px]">所在地</span><span class="flex-1 leading-relaxed pl-4">${data.address}</span></div>
+                    <div class="flex items-center"><span class="w-[120px]">名称</span><span class="flex-1 pl-4">${data.companyName}</span></div>
+                    <div class="flex items-center"><span class="w-[120px]">氏名</span><span class="flex-1 pl-4">${data.ownerName}</span></div>
                     <div class="flex items-baseline"><span class="w-[120px]">電話番号</span><div class="flex items-baseline font-mono text-[18px] pl-4"><span class="px-2">${data.phone?.area}</span><span class="mx-2">（</span><span class="px-2">${data.phone?.city} 局</span><span class="mx-2">）</span><span class="px-2">${data.phone?.num} 番</span></div></div>
                 </div>
                 <div class="w-[500px] space-y-6">
-                    <div class="border-2 border-black">
-                        <div class="bg-gray-50 border-b-2 border-black p-2 text-center font-bold text-[13px]">⑱ 社会保険労務士の提出代行者名記載欄</div>
-                        <div class="h-[100px] p-6 text-[16px] leading-relaxed">${data.proxyName || ""}</div>
-                    </div>
+                    <div class="border-2 border-black"><div class="bg-gray-50 border-b-2 border-black p-2 text-center font-bold text-[13px]">⑱ 代行者名記載欄</div><div class="h-[100px] p-6 text-[16px] leading-relaxed">${data.proxyName || ""}</div></div>
                     <div class="border-2 border-black p-6 space-y-6">
-                        <div class="flex justify-between items-start text-[12px]">
-                            <div class="flex flex-col gap-1"><span class="font-bold text-[13px]">⑲ （通知書）</span><span>紙の通知書を希望しますか</span><span class="text-[10px] text-gray-500 italic">（記入がない場合は、電子通知書を送付します）<br>（紙を希望された場合は、電子通知書は送付されません）</span></div>
-                            <div class="flex items-center gap-4 pt-2"><span class="font-bold">希望します</span><div class="w-6 h-6 border-2 border-black flex items-center justify-center font-bold bg-white text-lg">${data.paperNoticeDesired ? '✓' : ''}</div></div>
-                        </div>
+                        <div class="flex justify-between items-start text-[12px]"><div class="flex flex-col gap-1"><span class="font-bold">⑲ （通知書）</span><span>紙の通知書を希望しますか</span></div><div class="flex items-center gap-4 pt-2"><span class="font-bold">希望します</span><div class="w-6 h-6 border-2 border-black flex items-center justify-center font-bold bg-white text-lg">${data.paperNoticeDesired ? '✓' : ''}</div></div></div>
                         <div class="flex justify-between items-center text-[12px] pt-6 border-t-2 border-dotted border-gray-300">
-                            <div class="flex flex-col"><span class="font-bold text-[13px]">⑳ （添付書類）</span><span>添付書類はありますか</span></div>
-                            <div class="flex gap-8 items-center font-bold"><div class="flex items-center gap-3"><span>郵送</span><div class="w-5 h-5 border-2 border-black flex items-center justify-center bg-white">${data.attachmentStatus?.mail ? '✓' : ''}</div></div><div class="flex items-center gap-3"><span>電子</span><div class="w-5 h-5 border-2 border-black flex items-center justify-center bg-white">${data.attachmentStatus?.elec ? '✓' : ''}</div></div><div class="flex items-center gap-3"><span>なし</span><div class="w-5 h-5 border-2 border-black flex items-center justify-center ${data.attachmentStatus?.none ? 'bg-black text-white' : 'bg-white'}">${data.attachmentStatus?.none ? '✓' : ''}</div></div></div>
+                            <span class="font-bold">⑳ （添付書類）</span>
+                            <div class="flex gap-8 items-center font-bold">${["郵送", "電子", "なし"].map(l => `<div class="flex items-center gap-3"><span>${l}</span><div class="w-5 h-5 border-2 border-black flex items-center justify-center">${(l === "なし" && data.attachmentStatus?.none) || (l === "郵送" && data.attachmentStatus?.mail) || (l === "電子" && data.attachmentStatus?.elec) ? '✓' : ''}</div></div>`).join('')}</div>
                         </div>
                     </div>
                 </div>
@@ -470,194 +405,172 @@ const renderSummarySheet = (data: UniversalData) => {
     `;
 };
 
-// --- Rendering: Notice Sheet ---
+// --- Rendering: High-Fidelity Notice Sheet ---
 const renderNoticeSheet = (data: UniversalData) => {
     const isBonusDoc = data.docType === 'BONUS_NOTICE';
     return `
         <div class="bg-white w-[1000px] min-h-[1414px] p-16 text-black shadow-2xl relative font-['Noto_Sans_JP'] border border-slate-200 mx-auto">
             <div class="flex justify-between items-start mb-10">
-                <div class="text-[14px] leading-relaxed space-y-1">
-                    <p class="font-bold text-lg">${data.zipCodeSuffix || ''}</p>
-                    <p class="text-base">${data.address || ''}</p>
-                    <p class="pt-4 text-2xl font-black tracking-tighter">${data.companyName || ''}</p>
-                    <p class="text-2xl font-black">${data.ownerName || ''}　　様</p>
-                    <div class="pt-4 flex gap-8 text-[13px] font-mono text-slate-500">
-                        <span>${data.noticeMgmtNo || ''}</span>
-                        <span>${data.noticeMgmtBranch || ''}</span>
-                    </div>
-                </div>
-                <div class="flex flex-col items-end">
-                    <p class="text-sm font-bold mb-1">到達番号 ${data.arrivalNumber || ''}</p>
-                    <div class="border border-black p-4 w-[380px] h-[260px] text-[13px] leading-relaxed overflow-hidden text-justify">
-                        ${data.noticeBox || ''}
-                    </div>
-                </div>
+                <div class="text-[14px] leading-relaxed space-y-1"><p class="font-bold text-lg">${data.zipCodeSuffix || ''}</p><p class="text-base">${data.address || ''}</p><p class="pt-4 text-2xl font-black tracking-tighter">${data.companyName || ''}</p><p class="text-2xl font-black">${data.ownerName || ''}　　様</p></div>
+                <div class="flex flex-col items-end"><p class="text-sm font-bold mb-1">到達番号 ${data.arrivalNumber || ''}</p><div class="border border-black p-4 w-[380px] h-[260px] text-[13px] leading-relaxed overflow-hidden text-justify">${data.noticeBox || ''}</div></div>
             </div>
             <div class="text-center mb-16 mt-8"><h1 class="text-3xl font-black tracking-tight">${data.title}</h1></div>
             <table class="w-full border-collapse border-[1.5px] border-black text-sm mb-12">
-                <thead class="bg-gray-50">
+                <thead class="bg-gray-50"><tr class="h-14"><th class="border border-black px-1 py-1 font-bold w-20">整理番号</th><th class="border border-black px-4 py-1 font-bold">氏名</th><th class="border border-black px-1 py-1 font-bold w-32">${isBonusDoc ? '支払年月日' : '適用年月'}<br>(西暦)</th><th class="border border-black px-1 py-1 font-bold" colspan="2">${isBonusDoc ? '標準賞与額' : '標準報酬月額'}</th><th class="border border-black px-1 py-1 font-bold w-32">生年月日<br>(西暦)</th><th class="border border-black px-1 py-1 font-bold w-20">種別</th></tr></thead>
+                <tbody>${data.rows.map(r => {
+                    const datePrefix = isBonusDoc ? "賞与支払年月日" : "適用年月";
+                    const payDate = getFormattedDates(r[`${datePrefix}_元号`], r[`${datePrefix}_年`], r[`${datePrefix}_月`], r[`${datePrefix}_日`] || "1");
+                    const birthDate = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]);
+                    const val1 = normalize(r[isBonusDoc ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
+                    const val2 = normalize(r[isBonusDoc ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
+                    return `<tr class="h-20 text-center border-b border-black"><td class="border-r border-black">${normalize(r["被保険者整理番号"] || "")}</td><td class="border-r border-black text-left px-6 font-black text-xl">${normalize(r["被保険者氏名"] || "")}</td><td class="border-r border-black"><div>${payDate.jp}</div><div class="text-blue-600 text-[11px] font-bold">(${payDate.ad})</div></td><td class="border-r border-black px-2 font-black text-lg w-32"><div class="text-[10px] font-normal text-slate-400 mb-1">(健保)</div>${val1}</td><td class="border-r border-black px-2 font-black text-lg w-32"><div class="text-[10px] font-normal text-slate-400 mb-1">(厚年)</div>${val2}</td><td class="border-r border-black"><div>${birthDate.jp}</div><div class="text-emerald-600 text-[11px] font-bold">(${birthDate.ad})</div></td><td>${normalize(r["種別"] || "")}</td></tr>`;
+                }).join('')}</tbody>
+            </table>
+            <div class="mt-20 text-right space-y-4"><p class="text-lg font-bold underline underline-offset-4 decoration-slate-300">${data.creationDateJP || ''}</p><div class="pt-6"><p class="text-2xl font-black tracking-[0.3em]">日本年金機構理事長</p><p class="text-lg font-bold text-slate-600">(${data.pensionOffice || ''}年金事務所)</p></div></div>
+        </div>
+    `;
+};
+
+// --- Rendering: Updated Calculator View (Accuracy Fix) ---
+const renderCalculatorView = (data: UniversalData) => {
+    const isBonus = data.docType === 'BONUS_NOTICE';
+    return `
+        <div class="bg-white w-[1150px] min-h-[800px] p-10 text-black shadow-2xl font-['Noto_Sans_JP'] border border-gray-300 mx-auto rounded-3xl no-print">
+            <div class="flex justify-between items-center mb-8 border-b pb-6">
+                <div>
+                    <h2 class="text-3xl font-black text-slate-900">${data.title} - 社会保険料算出</h2>
+                    <p class="text-slate-500 mt-2 font-bold">被保険者負担分シミュレーション (個人負担=事業主折半後)</p>
+                </div>
+                <div class="bg-blue-50 p-6 rounded-2xl border border-blue-100 grid grid-cols-2 gap-x-6 gap-y-3 shadow-inner">
+                    <div class="flex flex-col"><label class="text-[11px] font-bold text-blue-600 mb-1">健康保険料率 (%)</label><input type="number" step="0.001" value="${state.rates.health}" class="border rounded-lg px-3 py-1 font-bold" id="rate-health"></div>
+                    <div class="flex flex-col"><label class="text-[11px] font-bold text-blue-600 mb-1">厚生年金料率 (%)</label><input type="number" step="0.001" value="${state.rates.pension}" class="border rounded-lg px-3 py-1 font-bold" id="rate-pension"></div>
+                    <div class="flex flex-col"><label class="text-[11px] font-bold text-blue-600 mb-1">介護保険料率 (%)</label><input type="number" step="0.001" value="${state.rates.nursing}" class="border rounded-lg px-3 py-1 font-bold" id="rate-nursing"></div>
+                    <div class="flex items-end pb-1"><div class="flex items-center gap-2 bg-white px-3 py-1 rounded-lg border border-blue-100 w-full shadow-sm"><input type="checkbox" id="calc-nursing" ${state.rates.isNursingTarget ? 'checked' : ''} class="w-4 h-4"><label class="text-[12px] font-bold text-slate-700" for="calc-nursing">自動判定(40-64歳)を優先</label></div></div>
+                </div>
+            </div>
+            <table class="w-full border-collapse border border-slate-200">
+                <thead class="bg-slate-800 text-white text-[12px]">
                     <tr class="h-14">
-                        <th class="border border-black px-1 py-1 font-bold w-20">整理番号</th>
-                        <th class="border border-black px-4 py-1 font-bold">氏名</th>
-                        <th class="border border-black px-1 py-1 font-bold w-32">${isBonusDoc ? '支払年月日' : '適用年月'}<br>(西暦)</th>
-                        <th class="border border-black px-1 py-1 font-bold" colspan="2">${isBonusDoc ? '標準賞与額' : '標準報酬月額'}</th>
-                        <th class="border border-black px-1 py-1 font-bold w-32">生年月日<br>(西暦)</th>
-                        <th class="border border-black px-1 py-1 font-bold w-20">種別</th>
+                        <th class="px-3 border border-slate-600">氏名</th>
+                        <th class="px-2 border border-slate-600 w-16 text-center">年齢</th>
+                        <th class="px-3 border border-slate-600 text-right">健保標準額</th>
+                        <th class="px-3 border border-slate-600 text-right">厚年標準額</th>
+                        <th class="px-3 border border-slate-600 text-right bg-blue-900/40">健保控除</th>
+                        <th class="px-3 border border-slate-600 text-right bg-indigo-900/40">厚年控除</th>
+                        <th class="px-3 border border-slate-600 text-right bg-teal-900/40">介護控除</th>
+                        <th class="px-4 border border-slate-600 text-right bg-slate-900 text-[14px]">控除額合計</th>
                     </tr>
                 </thead>
-                <tbody>
+                <tbody class="text-[14px]">
                     ${data.rows.map(r => {
-                        const datePrefix = isBonusDoc ? "賞与支払年月日" : "適用年月";
-                        const payDate = getFormattedDates(r[`${datePrefix}_元号`], r[`${datePrefix}_年`], r[`${datePrefix}_月`], r[`${datePrefix}_日`] || "1");
-                        const birthDate = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]);
-                        const val1 = normalize(r[isBonusDoc ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
-                        const val2 = normalize(r[isBonusDoc ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
+                        const birthData = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]);
+                        const age = calculateAge(birthData.ad);
+                        
+                        // 数値パース
+                        const rawAmtH = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
+                        const rawAmtP = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
+                        
+                        // 標準額の「千円単位」から「円単位」への変換ロジック
+                        // 月額届出の場合（isBonus=false）は千円単位。賞与の場合は円単位。
+                        const amtH = isBonus ? rawAmtH : rawAmtH * 1000;
+                        const amtP = isBonus ? rawAmtP : rawAmtP * 1000;
+
+                        // 介護保険料の自動判定ロジック (日本の社会保険法に基づき 40歳以上64歳以下を対象)
+                        const isNursingTargetAge = age >= 40 && age <= 64;
+                        const isNursingActive = state.rates.isNursingTarget ? isNursingTargetAge : false;
+
+                        // 控除額計算 (折半: 標準的な切捨て処理)
+                        const hDeduct = Math.floor(amtH * (state.rates.health / 100) / 2);
+                        const pDeduct = Math.floor(amtP * (state.rates.pension / 100) / 2);
+                        const nDeduct = isNursingActive ? Math.floor(amtH * (state.rates.nursing / 100) / 2) : 0;
+                        const total = hDeduct + pDeduct + nDeduct;
+
                         return `
-                        <tr class="h-20 text-center border-b border-black">
-                            <td class="border-r border-black">${normalize(r["被保険者整理番号"] || "")}</td>
-                            <td class="border-r border-black text-left px-6 font-black text-xl">${normalize(r["被保険者氏名"] || "")}</td>
-                            <td class="border-r border-black"><div>${payDate.jp}</div><div class="text-blue-600 text-[11px] font-bold">(${payDate.ad})</div></td>
-                            <td class="border-r border-black px-2 font-black text-lg w-32"><div class="text-[10px] font-normal text-slate-400 mb-1">(健保)</div>${val1}</td>
-                            <td class="border-r border-black px-2 font-black text-lg w-32"><div class="text-[10px] font-normal text-slate-400 mb-1">(厚年)</div>${val2}</td>
-                            <td class="border-r border-black"><div>${birthDate.jp}</div><div class="text-emerald-600 text-[11px] font-bold">(${birthDate.ad})</div></td>
-                            <td>${normalize(r["種別"] || "")}</td>
+                        <tr class="h-14 border-b border-slate-100 hover:bg-slate-50 transition-colors">
+                            <td class="px-3 font-bold text-slate-900 text-lg">${normalize(r["被保険者氏名"])}</td>
+                            <td class="px-2 text-center font-bold ${isNursingTargetAge ? 'text-teal-600' : 'text-slate-400'}">${age}歳</td>
+                            <td class="px-3 text-right font-mono text-slate-600">${amtH.toLocaleString()}円</td>
+                            <td class="px-3 text-right font-mono text-slate-600">${amtP.toLocaleString()}円</td>
+                            <td class="px-3 text-right font-mono text-blue-800 font-bold">${hDeduct.toLocaleString()}円</td>
+                            <td class="px-3 text-right font-mono text-indigo-800 font-bold">${pDeduct.toLocaleString()}円</td>
+                            <td class="px-3 text-right font-mono ${nDeduct > 0 ? 'text-teal-800 font-bold' : 'text-slate-300'}">${nDeduct > 0 ? nDeduct.toLocaleString() + '円' : '-'}</td>
+                            <td class="px-4 text-right font-mono text-2xl font-black bg-slate-50 text-slate-900">${total.toLocaleString()}円</td>
                         </tr>`;
                     }).join('')}
                 </tbody>
             </table>
-            <div class="mt-20 text-right space-y-4">
-                <p class="text-lg font-bold underline underline-offset-4 decoration-slate-300">${data.creationDateJP || ''}</p>
-                <div class="pt-6"><p class="text-2xl font-black tracking-[0.3em]">日本年金機構理事長</p><p class="text-lg font-bold text-slate-600">(${data.pensionOffice || ''}年金事務所)</p></div>
+            <div class="mt-6 p-4 bg-gray-50 rounded-xl border border-gray-100 text-[11px] text-gray-500 space-y-1">
+                <p class="font-bold text-slate-700">【算出方法について】</p>
+                <p>※1. <b>標準額の換算:</b> 報酬月額通知の場合、XML上の値（千円単位）を1,000倍して円単位で算出しています。</p>
+                <p>※2. <b>介護保険料:</b> 日本の制度に基づき、40歳から64歳までの被保険者を自動判定して算出しています。</p>
+                <p>※3. <b>端数処理:</b> 各項目ごとに端数は切捨て処理を行っています。端数処理設定（50銭等）により数円の誤差が出る場合があります。</p>
             </div>
         </div>
     `;
 };
 
-// --- Main App Logic ---
-const handleUpload = async (e: Event) => {
-    const input = e.target as HTMLInputElement;
-    const files = Array.from(input.files || []);
-    if (files.length === 0) return;
-    state.isLoading = true;
-    state.loadingMsg = "全種類のe-Gov XMLを解析中...";
-    render();
-    try {
-        const caseMap = new Map<string, AppFile[]>();
-        for (const f of files) {
-            const proc = async (path: string, name: string, content: string) => {
-                if (!name.toLowerCase().endsWith('.xml')) return;
-                try {
-                    const parser = new DOMParser();
-                    const doc = parser.parseFromString(content, "text/xml");
-                    const walk = (el: Element): XMLNode => {
-                        const n = el.tagName.split(':').pop() || el.tagName;
-                        const children: XMLNode[] = [];
-                        Array.from(el.childNodes).forEach(c => { if (c.nodeType === Node.ELEMENT_NODE) children.push(walk(c as Element)); });
-                        return { name: n, content: el.children.length === 0 ? el.textContent?.trim() : undefined, children };
-                    };
-                    const parsed = walk(doc.documentElement);
-                    const analysis = extractDetailed(parsed);
-                    const dir = path.split('/')[0] || "一括";
-                    if (!caseMap.has(dir)) caseMap.set(dir, []);
-                    caseMap.get(dir)!.push({ name, fullPath: path, content, parsed, analysis: analysis || undefined });
-                } catch (err) { console.error(err); }
-            };
-            if (f.name.endsWith('.zip')) {
-                const zip = await new JSZip().loadAsync(f);
-                for (const p of Object.keys(zip.files)) {
-                    if (zip.files[p].dir) continue;
-                    await proc(p, p.split('/').pop()!, await zip.files[p].async('string'));
-                }
-            } else {
-                await proc((f as any).webkitRelativePath || f.name, f.name, await f.text());
-            }
-        }
-        state.cases = Array.from(caseMap.entries()).map(([folderName, files]) => ({ folderName, files, isOpen: true }));
-        if (state.cases.length > 0) { state.selectedCaseIdx = 0; state.selectedFileIdx = 0; }
-    } finally { state.isLoading = false; render(); }
-};
-
+// --- App Control ---
 const render = () => {
     const root = document.getElementById('root');
     if (!root) return;
-    if (state.isLoading) { root.innerHTML = `<div class="h-screen flex flex-col items-center justify-center bg-[#0a192f] text-white"><div class="animate-spin w-12 h-12 border-4 border-white/20 border-t-white rounded-full mb-6"></div><p class="text-xl font-bold">${state.loadingMsg}</p></div>`; return; }
-    
+    if (state.isLoading) { root.innerHTML = `<div class="h-screen flex items-center justify-center bg-slate-900 text-white animate-pulse text-xl">解析中...</div>`; return; }
     if (state.cases.length === 0) {
-        root.innerHTML = `
-            <div class="h-screen flex items-center justify-center bg-[#f1f5f9]">
-                <div class="bg-white p-24 rounded-[3rem] shadow-2xl text-center border-t-8 border-blue-600 max-w-2xl">
-                    <div class="w-24 h-24 bg-blue-600 text-white rounded-3xl flex items-center justify-center mx-auto mb-10 shadow-2xl rotate-3"><i data-lucide="file-check" size="40"></i></div>
-                    <h1 class="text-4xl font-black mb-6 tracking-tight text-slate-900">e-Gov Notice Explorer</h1>
-                    <p class="text-lg text-slate-500 mb-12 font-medium leading-relaxed">標準報酬決定・賞与決定通知・総括票を<br>画像通りの実物レイアウトで再現します</p>
-                    <div class="flex gap-6 justify-center">
-                        <label class="bg-blue-600 text-white px-12 py-5 rounded-2xl font-black cursor-pointer hover:bg-blue-700 transition-all shadow-xl active:scale-95 text-lg text-center leading-none flex items-center">フォルダ読込<input type="file" id="dirIn" class="hidden" webkitdirectory directory /></label>
-                        <label class="bg-slate-900 text-white px-12 py-5 rounded-2xl font-black cursor-pointer hover:bg-black transition-all shadow-xl active:scale-95 text-lg text-center leading-none flex items-center">ZIP / XML選択<input type="file" id="zipIn" class="hidden" accept=".zip,.xml" /></label>
-                    </div>
-                </div>
-            </div>`;
-        document.getElementById('dirIn')?.addEventListener('change', handleUpload);
-        document.getElementById('zipIn')?.addEventListener('change', handleUpload);
-        if ((window as any).lucide) (window as any).lucide.createIcons();
-        return;
+        root.innerHTML = `<div class="h-screen flex items-center justify-center bg-slate-50"><label class="bg-blue-600 text-white px-10 py-5 rounded-2xl font-bold cursor-pointer shadow-xl hover:bg-blue-700 transition-all">ファイル読込 (XML/ZIP)<input type="file" id="zipIn" class="hidden" accept=".zip,.xml" /></label></div>`;
+        document.getElementById('zipIn')?.addEventListener('change', handleUpload); return;
     }
-
     const cur = state.cases[state.selectedCaseIdx]?.files[state.selectedFileIdx];
     const data = cur?.analysis;
     const isNotice = data?.docType === 'NOTICE' || data?.docType === 'BONUS_NOTICE';
 
     root.innerHTML = `
-        <div class="h-screen flex flex-col bg-slate-100 overflow-hidden no-print">
-            <header class="bg-white border-b px-10 py-5 flex justify-between items-center z-50 shadow-sm">
-                <div class="flex items-center gap-6">
-                    <button id="home" class="p-3 bg-slate-50 border rounded-xl hover:bg-slate-100 transition-colors"><i data-lucide="home"></i></button>
-                    <h1 class="text-2xl font-black tracking-tighter">e-Gov Explorer <span class="text-blue-600">Pro</span></h1>
+        <div class="h-screen flex flex-col bg-slate-100 overflow-hidden">
+            <header class="bg-white border-b px-8 py-4 flex justify-between items-center z-50 no-print">
+                <div class="flex items-center gap-4">
+                    <button id="home" class="p-2 border rounded-xl hover:bg-slate-50 transition-colors"><i data-lucide="home"></i></button>
+                    <h1 class="font-black text-xl">e-Gov Explorer <span class="text-blue-600">Hidelity</span></h1>
                 </div>
-                ${isNotice ? `
-                <div class="flex items-center gap-3">
-                    <button id="btn-calc" class="flex items-center gap-2 px-6 py-3 rounded-xl font-bold bg-slate-900 text-white hover:bg-black transition-all shadow-md active:scale-95">
-                        <i data-lucide="calculator" size="18"></i> 控除額計算
+                <div class="flex gap-2">
+                    ${isNotice ? `
+                    <button id="btn-calc" class="flex items-center gap-2 px-6 py-2 rounded-xl font-bold ${state.viewMode === 'calculator' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-white'} transition-all shadow-md">
+                        <i data-lucide="${state.viewMode === 'calculator' ? 'file-text' : 'calculator'}" size="18"></i> ${state.viewMode === 'calculator' ? '帳票表示に戻る' : '控除額計算シミュレータ'}
                     </button>
-                    <button id="btn-csv" class="flex items-center gap-2 px-6 py-3 rounded-xl font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition-all shadow-md active:scale-95">
-                        <i data-lucide="download" size="18"></i> CSV出力
-                    </button>
-                    <button id="btn-pdf" class="flex items-center gap-2 px-6 py-3 rounded-xl font-bold bg-rose-600 text-white hover:bg-rose-700 transition-all shadow-md active:scale-95">
-                        <i data-lucide="printer" size="18"></i> PDF印刷
+                    <button id="btn-csv" class="flex items-center gap-2 px-6 py-2 rounded-xl font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition-all shadow-md">
+                        <i data-lucide="download" size="18"></i> CSV保存
+                    </button>` : ''}
+                    <button id="btn-pdf" class="flex items-center gap-2 px-6 py-2 rounded-xl font-bold bg-rose-600 text-white hover:bg-rose-700 transition-all shadow-md">
+                        <i data-lucide="printer" size="18"></i> PDF保存(印刷)
                     </button>
                 </div>
-                ` : ''}
             </header>
             <div class="flex-1 flex overflow-hidden">
-                <aside class="w-96 bg-white border-r flex flex-col overflow-y-auto p-6 space-y-4">
+                <aside class="w-80 bg-white border-r overflow-y-auto p-4 no-print">
                     ${state.cases.map((c, ci) => `
-                        <div class="mb-6">
-                            <button class="w-full text-left p-4 font-black text-sm text-slate-400 uppercase tracking-[0.2em] toggle-case flex justify-between items-center bg-slate-50 rounded-xl mb-2" data-idx="${ci}">${c.folderName} <i data-lucide="${c.isOpen ? 'chevron-up' : 'chevron-down'}" size="16"></i></button>
-                            ${c.isOpen ? c.files.map((f, fi) => `
-                                <button class="w-full text-left p-5 text-[13px] font-bold rounded-2xl mt-2 select-file transition-all border ${ci === state.selectedCaseIdx && fi === state.selectedFileIdx ? 'bg-blue-600 text-white border-blue-600 shadow-xl translate-x-2' : 'bg-white text-slate-600 hover:bg-slate-50 border-slate-100'}" data-ci="${ci}" data-fi="${fi}">${f.name}</button>
-                            `).join('') : ''}
-                        </div>
+                        <button class="w-full text-left p-3 bg-slate-50 font-bold mb-2 rounded-xl toggle-case flex justify-between items-center" data-idx="${ci}">${c.folderName} <i data-lucide="${c.isOpen ? 'chevron-up' : 'chevron-down'}" size="14"></i></button>
+                        ${c.isOpen ? c.files.map((f, fi) => `
+                            <button class="w-full text-left p-4 text-[11px] font-bold mb-1 rounded-xl border transition-all ${ci === state.selectedCaseIdx && fi === state.selectedFileIdx ? 'bg-blue-600 text-white border-blue-600 shadow-lg translate-x-1' : 'bg-white hover:bg-slate-50 border-slate-100'}" data-ci="${ci}" data-fi="${fi}">${f.name}</button>
+                        `).join('') : ''}
                     `).join('')}
                 </aside>
-                <main class="flex-1 bg-slate-200 overflow-y-auto p-12 flex flex-col items-center">
-                    <div class="mb-12 flex bg-white p-1.5 rounded-2xl shadow-2xl no-print border border-slate-300">
-                        <button id="sumV" class="px-16 py-4 rounded-2xl text-[14px] font-black transition-all ${state.viewMode === 'summary' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50'}">プレビュー表示</button>
-                        <button id="treeV" class="px-16 py-4 rounded-2xl text-[14px] font-black transition-all ${state.viewMode === 'tree' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50'}">XML構造</button>
+                <main class="flex-1 bg-slate-200 overflow-y-auto p-12">
+                    <div class="mb-8 flex justify-center bg-white p-2 rounded-2xl w-fit mx-auto shadow-sm no-print border border-slate-300">
+                        <button id="sumV" class="px-10 py-3 rounded-xl font-black ${state.viewMode !== 'tree' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}">帳票プレビュー</button>
+                        <button id="treeV" class="px-10 py-3 rounded-xl font-black ${state.viewMode === 'tree' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}">XML構造解析</button>
                     </div>
                     <div class="print-area">
                         ${state.viewMode === 'calculator' && data ? renderCalculatorView(data) :
-                          (state.viewMode === 'summary' && data ? 
+                          (state.viewMode !== 'tree' && data ? 
                             (data.docType === 'SUMMARY' ? renderSummarySheet(data) : 
-                             (data.docType === 'NOTICE' || data.docType === 'BONUS_NOTICE') ? renderNoticeSheet(data) : 
-                             '<div class="text-center p-20">Unsupported Document Type</div>') : 
-                          (state.viewMode === 'summary' ? '<div class="bg-white p-40 rounded-3xl shadow-xl text-slate-300 font-black italic text-2xl text-center">解析データなし</div>' : `<pre class="bg-[#0f172a] text-blue-400 p-12 rounded-3xl w-full max-w-5xl text-[13px] overflow-auto shadow-2xl leading-relaxed font-mono border-t-[20px] border-blue-900">${JSON.stringify(cur?.parsed, null, 2)}</pre>`))}
+                             data.docType === 'ANNOUNCEMENT' ? renderAnnouncementSheet(data) :
+                             renderNoticeSheet(data)) : 
+                          (state.viewMode === 'tree' ? `<pre class="bg-slate-900 text-blue-400 p-10 rounded-3xl font-mono text-xs overflow-auto shadow-2xl">${JSON.stringify(cur?.parsed, null, 2)}</pre>` : '<div class="text-center p-20 bg-white rounded-3xl shadow">プレビュー対象外のファイルです</div>'))}
                     </div>
                 </main>
             </div>
-            <!-- Global Styles for Print -->
             <style>
                 @media print {
-                    .no-print, header, aside, .mb-12.flex { display: none !important; }
+                    .no-print, header, aside, .mb-8 { display: none !important; }
                     main { padding: 0 !important; background: white !important; overflow: visible !important; height: auto !important; }
-                    .print-area { box-shadow: none !important; margin: 0 !important; width: 100% !important; }
+                    .print-area { box-shadow: none !important; width: 100% !important; margin: 0 !important; }
                     body { background: white !important; }
                 }
             </style>
@@ -667,41 +580,52 @@ const render = () => {
     if ((window as any).lucide) (window as any).lucide.createIcons();
 };
 
+const handleUpload = async (e: Event) => {
+    const files = Array.from((e.target as HTMLInputElement).files || []);
+    if (files.length === 0) return;
+    state.isLoading = true; render();
+    const caseMap = new Map<string, AppFile[]>();
+    for (const f of files) {
+        const proc = async (path: string, name: string, content: string) => {
+            if (!name.toLowerCase().endsWith('.xml')) return;
+            const doc = new DOMParser().parseFromString(content, "text/xml");
+            const walk = (el: Element): XMLNode => {
+                const n = el.tagName.split(':').pop() || el.tagName;
+                const children: XMLNode[] = [];
+                Array.from(el.childNodes).forEach(c => { if (c.nodeType === Node.ELEMENT_NODE) children.push(walk(c as Element)); });
+                return { name: n, content: el.children.length === 0 ? el.textContent?.trim() : undefined, children };
+            };
+            const parsed = walk(doc.documentElement);
+            const dir = path.split('/')[0] || "一括";
+            if (!caseMap.has(dir)) caseMap.set(dir, []);
+            caseMap.get(dir)!.push({ name, fullPath: path, content, parsed, analysis: extractDetailed(parsed) || undefined });
+        };
+        if (f.name.endsWith('.zip')) {
+            const zip = await new JSZip().loadAsync(f);
+            for (const p of Object.keys(zip.files)) if (!zip.files[p].dir) await proc(p, p.split('/').pop()!, await zip.files[p].async('string'));
+        } else await proc(f.name, f.name, await f.text());
+    }
+    state.cases = Array.from(caseMap.entries()).map(([folderName, files]) => ({ folderName, files, isOpen: true }));
+    if (state.cases.length > 0) { state.selectedCaseIdx = 0; state.selectedFileIdx = 0; }
+    state.isLoading = false; render();
+};
+
 const attach = () => {
     document.getElementById('home')?.addEventListener('click', () => { state.cases = []; render(); });
     document.getElementById('sumV')?.addEventListener('click', () => { state.viewMode = 'summary'; render(); });
     document.getElementById('treeV')?.addEventListener('click', () => { state.viewMode = 'tree'; render(); });
-    
-    document.getElementById('btn-calc')?.addEventListener('click', () => { 
-        state.viewMode = (state.viewMode === 'calculator' ? 'summary' : 'calculator');
-        render(); 
-    });
+    document.getElementById('btn-calc')?.addEventListener('click', () => { state.viewMode = state.viewMode === 'calculator' ? 'summary' : 'calculator'; render(); });
     document.getElementById('btn-csv')?.addEventListener('click', downloadCSV);
     document.getElementById('btn-pdf')?.addEventListener('click', () => window.print());
-
-    // Calc inputs
-    if (state.viewMode === 'calculator') {
-        const hIn = document.getElementById('rate-health') as HTMLInputElement;
-        const pIn = document.getElementById('rate-pension') as HTMLInputElement;
-        const nIn = document.getElementById('rate-nursing') as HTMLInputElement;
-        const ntIn = document.getElementById('calc-nursing') as HTMLInputElement;
-
-        const updateRates = () => {
-            state.rates.health = parseFloat(hIn.value) || 0;
-            state.rates.pension = parseFloat(pIn.value) || 0;
-            state.rates.nursing = parseFloat(nIn.value) || 0;
-            state.rates.isNursingTarget = ntIn.checked;
-            render();
-        };
-
-        hIn?.addEventListener('change', updateRates);
-        pIn?.addEventListener('change', updateRates);
-        nIn?.addEventListener('change', updateRates);
-        ntIn?.addEventListener('change', updateRates);
-    }
-
     document.querySelectorAll('.toggle-case').forEach(b => b.addEventListener('click', (e) => { const i = parseInt((e.currentTarget as any).dataset.idx); state.cases[i].isOpen = !state.cases[i].isOpen; render(); }));
-    document.querySelectorAll('.select-file').forEach(b => b.addEventListener('click', (e) => { const t = e.currentTarget as any; state.selectedCaseIdx = parseInt(t.dataset.ci); state.selectedFileIdx = parseInt(t.dataset.fi); state.viewMode = 'summary'; render(); }));
+    document.querySelectorAll('[data-ci]').forEach(b => b.addEventListener('click', (e) => { const t = e.currentTarget as any; state.selectedCaseIdx = parseInt(t.dataset.ci); state.selectedFileIdx = parseInt(t.dataset.fi); state.viewMode = 'summary'; render(); }));
+    if (state.viewMode === 'calculator') {
+        ['rate-health', 'rate-pension', 'rate-nursing', 'calc-nursing'].forEach(id => document.getElementById(id)?.addEventListener('change', (e: any) => {
+            if (id === 'calc-nursing') state.rates.isNursingTarget = e.target.checked;
+            else (state.rates as any)[id.split('-')[1]] = parseFloat(e.target.value) || 0;
+            render();
+        }));
+    }
 };
 
 render();
