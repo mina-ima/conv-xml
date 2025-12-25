@@ -1,12 +1,11 @@
 
 import React, { useState, useMemo } from 'react';
 import { Upload, FileText, LayoutGrid, ListTree, Loader2, AlertCircle, ChevronLeft, Download, Printer, Users, Settings2, Calculator } from 'lucide-react';
-import { analyzeXMLContent } from './services/geminiService';
-import { XMLNode, AnalysisResult } from './types';
-import XMLTreeView from './components/XMLTreeView';
+import { analyzeXMLContent } from './services/geminiService.ts';
+import { XMLNode, AnalysisResult } from './types.ts';
+import XMLTreeView from './components/XMLTreeView.tsx';
 
 // デフォルトの保険料率（令和6年度 協会けんぽ 東京 参照例）
-// 実際にはユーザーが画面上で調整可能
 const DEFAULT_RATES = {
   health: 9.98,      // 健康保険率 (%)
   pension: 18.3,     // 厚生年金率 (%)
@@ -77,10 +76,7 @@ const App: React.FC = () => {
     reader.readAsText(file);
   };
 
-  // 年齢計算ヘルパー
   const calculateAge = (birthStr: string) => {
-    // 形式: R10.07.15 または H10.07.15 または 1998/07/15
-    // AIが抽出した文字列から年を推測
     let year = 0;
     const match = birthStr.match(/([SHTR])?\s?(\d+)/);
     if (!match) return 0;
@@ -95,7 +91,6 @@ const App: React.FC = () => {
     return new Date().getFullYear() - year;
   };
 
-  // 保険料計算ロジック
   const calculatedRows = useMemo(() => {
     if (!analysis?.tableData) return [];
     const { headers, rows } = analysis.tableData;
@@ -111,7 +106,6 @@ const App: React.FC = () => {
       const age = calculateAge(birth);
       const isNursingTarget = age >= 40 && age < 65;
 
-      // 本人負担分 (折半)
       const healthPremium = Math.floor((healthAmount * (rates.health / 100)) / 2);
       const pensionPremium = Math.floor((pensionAmount * (rates.pension / 100)) / 2);
       const nursingPremium = isNursingTarget ? Math.floor((healthAmount * (rates.nursing / 100)) / 2) : 0;
@@ -208,12 +202,11 @@ const App: React.FC = () => {
 
         {analysis && viewMode === 'summary' && (
           <div className="animate-in fade-in duration-500">
-            {/* 料率設定パネル */}
             {showSettings && (
               <div className="mb-6 p-6 bg-white rounded-2xl border border-blue-100 shadow-sm animate-in slide-in-from-top-4 print:hidden">
                 <div className="flex items-center gap-2 text-blue-700 mb-4">
                   <Calculator size={20} />
-                  <h3 className="font-bold">保険料率設定（会社・組合の規定に合わせて変更してください）</h3>
+                  <h3 className="font-bold">保険料率設定</h3>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
                   <div>
@@ -229,7 +222,6 @@ const App: React.FC = () => {
                     <input type="number" step="0.01" value={rates.nursing} onChange={e => setRates({...rates, nursing: parseFloat(e.target.value)})} className="w-full p-2 border border-slate-200 rounded-lg font-mono" />
                   </div>
                 </div>
-                <p className="mt-4 text-[10px] text-slate-400">※上記料率に基づき、本人負担分（50%）を計算します。端数は切り捨てです。</p>
               </div>
             )}
 
@@ -254,10 +246,10 @@ const App: React.FC = () => {
                       {analysis.tableData?.headers.map((h, i) => (
                         <th key={i} className="border border-slate-200 py-3 px-4 text-left text-[10px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap">{h}</th>
                       ))}
-                      <th className="border border-slate-200 py-3 px-4 text-left text-[10px] font-bold text-blue-600 uppercase tracking-wider whitespace-nowrap bg-blue-50/50">本人負担:健保</th>
-                      <th className="border border-slate-200 py-3 px-4 text-left text-[10px] font-bold text-blue-600 uppercase tracking-wider whitespace-nowrap bg-blue-50/50">本人負担:厚年</th>
-                      <th className="border border-slate-200 py-3 px-4 text-left text-[10px] font-bold text-blue-600 uppercase tracking-wider whitespace-nowrap bg-blue-50/50">本人負担:介護</th>
-                      <th className="border border-slate-200 py-3 px-4 text-left text-[10px] font-bold text-indigo-600 uppercase tracking-wider whitespace-nowrap bg-indigo-50/50">控除合計額</th>
+                      <th className="border border-slate-200 py-3 px-4 text-left text-[10px] font-bold text-blue-600 bg-blue-50/50">本人負担:健保</th>
+                      <th className="border border-slate-200 py-3 px-4 text-left text-[10px] font-bold text-blue-600 bg-blue-50/50">本人負担:厚年</th>
+                      <th className="border border-slate-200 py-3 px-4 text-left text-[10px] font-bold text-blue-600 bg-blue-50/50">本人負担:介護</th>
+                      <th className="border border-slate-200 py-3 px-4 text-left text-[10px] font-bold text-indigo-600 bg-indigo-50/50">控除合計額</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -276,26 +268,6 @@ const App: React.FC = () => {
                     ))}
                   </tbody>
                 </table>
-              </div>
-
-              <div className="p-8 bg-slate-50/50 grid grid-cols-1 md:grid-cols-2 gap-8 print:grid-cols-1">
-                <div className="space-y-4">
-                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b pb-2">集計と要約</h3>
-                  {analysis.mainDetails.map((d, i) => (
-                    <div key={i} className="flex justify-between text-sm py-1 border-b border-slate-100">
-                      <span className="text-slate-500">{d.label}</span>
-                      <span className="font-bold text-slate-900">{d.value}</span>
-                    </div>
-                  ))}
-                </div>
-                <div className="space-y-4">
-                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b pb-2">重要事項</h3>
-                  <ul className="space-y-2">
-                    {analysis.keyPoints.map((p, i) => (
-                      <li key={i} className="text-[13px] text-slate-700 flex gap-2"><span className="text-blue-500">■</span>{p}</li>
-                    ))}
-                  </ul>
-                </div>
               </div>
             </div>
           </div>
