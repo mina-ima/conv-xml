@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { AnalysisResult } from "../types.ts";
+import { AnalysisResult } from "../types";
 
 export const analyzeXMLContent = async (xmlString: string): Promise<AnalysisResult> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });

@@ -1,9 +1,9 @@
 
 import React, { useState, useMemo } from 'react';
 import { Upload, FileText, Loader2, AlertCircle, Download, Printer, Settings2, Calculator, Info, Database } from 'lucide-react';
-import { analyzeXMLContent } from './services/geminiService.ts';
-import { XMLNode, AnalysisResult } from './types.ts';
-import XMLTreeView from './components/XMLTreeView.tsx';
+import { analyzeXMLContent } from './services/geminiService';
+import { XMLNode, AnalysisResult } from './types';
+import XMLTreeView from './components/XMLTreeView';
 
 const DEFAULT_RATES = {
   health: 9.98,
@@ -299,7 +299,7 @@ const App: React.FC = () => {
                 )}
                 {!isLoading && !analysis && !error && (
                   <div className="py-24 text-center bg-white rounded-[2rem] border-2 border-dashed border-slate-100">
-                    <Info className="mx-auto mb-6 text-slate-200" size={64} />
+                    <span className="flex items-center justify-center w-24 h-24 rounded-full bg-slate-50 mx-auto mb-6 text-slate-200"><Info size={48} /></span>
                     <p className="text-slate-400 font-bold text-lg">解析データを準備しています...</p>
                     <p className="text-slate-300 text-sm mt-2">画面上の「XML構造」タブから生のデータを確認することもできます。</p>
                   </div>

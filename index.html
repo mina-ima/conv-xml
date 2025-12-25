@@ -8,12 +8,8 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
     <script>
-        // ブラウザ実行環境でのprocess.envエラーを防止するため、スクリプトの読み込み前に定義
-        window.process = { 
-            env: { 
-                API_KEY: "" 
-            } 
-        };
+        // process.env のモックを定義
+        window.process = { env: { API_KEY: "" } };
     </script>
     <style>
         body {
@@ -41,7 +37,7 @@
     "react-dom": "https://esm.sh/react-dom@19.0.0",
     "react-dom/client": "https://esm.sh/react-dom@19.0.0/client",
     "lucide-react": "https://esm.sh/lucide-react@0.468.0",
-    "@google/genai": "https://esm.sh/@google/genai@0.21.0",
+    "@google/genai": "https://esm.sh/@google/genai@0.2.1",
     "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
     "react/": "https://esm.sh/react@^19.2.3/"
   }
