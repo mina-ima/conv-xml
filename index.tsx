@@ -62,75 +62,81 @@ const parseXML = (xmlString: string): XMLNode => {
 };
 
 /**
- * e-GovのXMLからローカルでデータを抽出するヒューリスティックエンジン
+ * e-GovのXMLからローカルでデータを抽出する強化版エンジン
  */
 const localExtractData = (node: XMLNode): AnalysisResult => {
-    // Fix: Changed rows type from string[][] to any[] to store Record objects temporarily
-    const rows: any[] = [];
-    let headers: string[] = [];
-    const headerSet = new Set<string>();
+    let bestRows: any[] = [];
+    let bestHeaderSet = new Set<string>();
+    let maxCount = 0;
 
-    // e-Gov特有のデータ構造（被保険者やレコード単位）を探す
-    const findRecords = (n: XMLNode) => {
-        // 子要素が多く、かつ似たような構造を持つノードをレコードとみなす
-        if (n.children.length > 2) {
-            const childrenNames = n.children.map(c => c.name);
-            const uniqueNames = new Set(childrenNames);
-            
-            // 全ての子要素が同じタグ名（例: <被保険者>）ならレコードの親
-            if (uniqueNames.size === 1) {
-                n.children.forEach(record => {
-                    const rowData: Record<string, string> = {};
-                    record.children.forEach(field => {
-                        // ネストされている場合は平坦化
-                        const extractValue = (fn: XMLNode, prefix = ""): void => {
+    // XMLツリーを走査して、最も「表らしい」部分を探す
+    const findTableCandidates = (n: XMLNode) => {
+        if (n.children.length > 0) {
+            // 子要素のタグ名の出現回数をカウント
+            const counts: Record<string, number> = {};
+            n.children.forEach(c => {
+                counts[c.name] = (counts[c.name] || 0) + 1;
+            });
+
+            // 2回以上繰り返されているタグがあれば、それをレコードの候補とする
+            for (const [tagName, count] of Object.entries(counts)) {
+                if (count >= 1) {
+                    const currentRows: any[] = [];
+                    const currentHeaderSet = new Set<string>();
+
+                    // 該当するタグを持つ子要素からデータを抽出
+                    const targetChildren = n.children.filter(c => c.name === tagName);
+                    targetChildren.forEach(record => {
+                        const rowData: Record<string, string> = {};
+                        const extractFields = (fn: XMLNode, prefix = "") => {
                             if (fn.children.length === 0) {
                                 const key = prefix + fn.name;
                                 rowData[key] = fn.content || "";
-                                headerSet.add(key);
+                                currentHeaderSet.add(key);
                             } else {
-                                fn.children.forEach(c => extractValue(c, fn.name + "_"));
+                                fn.children.forEach(c => extractFields(c, fn.name + "_"));
                             }
                         };
-                        extractValue(field);
+                        extractFields(record);
+                        if (Object.keys(rowData).length > 0) {
+                            currentRows.push(rowData);
+                        }
                     });
-                    // Fix: rows.push(rowData) now works because rows is any[]
-                    rows.push(rowData);
-                });
-                return true;
+
+                    // より多くのレコードを持っている、または情報量が多い方を採用
+                    const score = currentRows.length * currentHeaderSet.size;
+                    if (score > maxCount) {
+                        maxCount = score;
+                        bestRows = currentRows;
+                        bestHeaderSet = currentHeaderSet;
+                    }
+                }
             }
         }
-        for (const child of n.children) {
-            if (findRecords(child)) return true;
-        }
-        return false;
+        n.children.forEach(findTableCandidates);
     };
 
-    findRecords(node);
+    findTableCandidates(node);
 
-    // ヘッダーの整理（日本語タグ名を優先し、順序を固定）
-    headers = Array.from(headerSet);
-    
-    // データの整形
-    const formattedRows = rows.map(r => headers.map(h => r[h] || ""));
+    // ヘッダーと行データの整形
+    const headers = Array.from(bestHeaderSet);
+    const formattedRows = bestRows.map(r => headers.map(h => r[h] || ""));
 
     return {
-        title: node.name === "通知書" ? "e-Gov 通知書データ" : "抽出されたデータ",
+        title: node.name === "通知書" ? "e-Gov 通知書データ" : "解析結果",
         tableData: {
-            headers: headers.map(h => h.replace(/.*_/, "")), // 接頭辞を除去して読みやすく
+            headers: headers.map(h => h.replace(/.*_/, "")), // 表示用に短縮
             rows: formattedRows
         }
     };
 };
 
-// --- Gemini Service (Optional Enhancement) ---
+// --- Gemini Service ---
 const analyzeWithAI = async (xmlString: string): Promise<AnalysisResult> => {
     if (!process.env.API_KEY) throw new Error("API Key not configured");
-    
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const contentSnippet = xmlString.substring(0, 200000);
 
-    // Fix: Added responseSchema for better structured output following Gemini best practices
     const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: `Extract social insurance table from e-Gov XML. Output JSON {title, tableData: {headers, rows}}. XML: ${contentSnippet}`,
@@ -153,8 +159,6 @@ const analyzeWithAI = async (xmlString: string): Promise<AnalysisResult> => {
             }
         }
     });
-    
-    // Fix: Access .text property directly as per Gemini API guidelines
     return JSON.parse(response.text || "{}");
 };
 
@@ -163,7 +167,6 @@ const calculatePremiums = () => {
     if (!state.analysis?.tableData) return [];
     const { headers, rows } = state.analysis.tableData;
     
-    // カラム位置の特定（曖昧一致）
     const findIdx = (keywords: string[]) => headers.findIndex(h => keywords.some(k => h.includes(k)));
     
     const hIdx = findIdx(["健保", "健康保険", "標準額", "標準報酬"]);
@@ -175,7 +178,6 @@ const calculatePremiums = () => {
         const pensionAmount = parseInt(row[pIdx]?.replace(/[^0-9]/g, '') || '0') * (row[pIdx]?.includes('千円') ? 1000 : 1);
         
         const birthStr = row[bIdx] || "";
-        // 40歳以上介護保険対象判定（簡易：昭和または19xx年生まれを対象）
         const isNursing = birthStr.includes("S") || birthStr.includes("19") || (birthStr.includes("H") && parseInt(birthStr.replace(/[^0-9]/g, '')) < 10);
 
         const healthPremium = Math.floor((healthAmount * (state.rates.health / 100)) / 2);
@@ -281,14 +283,14 @@ const render = () => {
                                                 <td class="p-5 text-sm font-black text-right text-blue-700 bg-blue-50/10">¥${r.total.toLocaleString()}</td>
                                             </tr>
                                         `).join('')}
-                                        ${results.length === 0 ? '<tr><td colspan="100" class="p-20 text-center text-slate-400 font-bold">データが検出されませんでした。</td></tr>' : ''}
+                                        ${results.length === 0 ? '<tr><td colspan="100" class="p-20 text-center text-slate-400 font-bold">データが検出されませんでした。ファイルの中身を確認してください。</td></tr>' : ''}
                                     </tbody>
                                 </table>
                             </div>
                         </div>
                     ` : `
                         <div class="bg-slate-900 p-8 rounded-[2rem] shadow-2xl overflow-auto text-slate-300 font-mono text-sm max-h-[80vh] border border-slate-800">
-                            ${renderTree(state.parsedNode!)}
+                            ${state.parsedNode ? renderTree(state.parsedNode) : ''}
                         </div>
                     `}
                 </main>
@@ -321,21 +323,19 @@ const handleFile = (e: Event) => {
         state.xmlContent = text;
         try {
             state.parsedNode = parseXML(text);
-            // ローカル解析を即実行
             state.analysis = localExtractData(state.parsedNode);
             render();
             
-            // APIキーがある場合のみ、背後でAIによる補正を試みる（オプション）
             if (process.env.API_KEY) {
                 analyzeWithAI(text).then(aiResult => {
-                    if (aiResult.tableData) {
+                    if (aiResult.tableData && aiResult.tableData.rows.length > 0) {
                         state.analysis = aiResult;
                         render();
                     }
                 }).catch(err => console.debug("AI enhancement skipped:", err));
             }
         } catch (err) {
-            alert("XMLの読み込みに失敗しました。正しいファイル形式か確認してください。");
+            alert("XMLの解析に失敗しました。ファイル形式を確認してください。");
         }
     };
     reader.readAsText(file);
@@ -345,6 +345,7 @@ const attachEvents = () => {
     document.getElementById('resetBtn')?.addEventListener('click', () => { 
         state.xmlContent = null; 
         state.analysis = null;
+        state.parsedNode = null;
         render(); 
     });
     document.getElementById('toggleSettings')?.addEventListener('click', () => { state.showSettings = !state.showSettings; render(); });
