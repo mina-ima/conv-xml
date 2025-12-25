@@ -139,7 +139,6 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
     let isBonusNotice = node.name === "N7150001" || node.children.some(c => c.name === "_被保険者");
 
     if (isBonusNotice) {
-        // --- Special Case: Standard Bonus Notice ---
         title = "健康保険・厚生年金保険標準賞与額決定通知書";
         const rows: any[] = [];
         node.children.forEach(c => {
@@ -157,7 +156,6 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
                     if (name === "通知年月日") creationDate = val;
                     if (name === "事業所整理記号") officeInfo["事業所整理記号"] = val;
                     if (name === "事業所番号") officeInfo["事業所番号"] = val;
-                    
                     row[name] = val;
                 });
                 rows.push(row);
@@ -167,7 +165,6 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
         return { title, arrivalNumber, postCode, address, companyName, recipientName, creationDate, officeName, officeInfo, headers, sections, docNo, authorAff, authorName, paragraphs, appendices, noticeBox, isBonusNotice };
     }
 
-    // --- Standard Notice / Table Processing ---
     const processNode = (n: XMLNode, path: string = "") => {
         const name = TAG_MAP[n.name] || n.name;
         const val = n.content || "";
@@ -351,7 +348,7 @@ const render = () => {
                         `).join('')}
                     </div>
                 </aside>
-                <main class="flex-1 bg-slate-200 overflow-y-auto p-10 flex flex-col items-center">
+                <main class="flex-1 bg-slate-200 overflow-y-auto p-4 md:p-10 flex flex-col items-center">
                     <div class="mb-10 flex bg-white p-1.5 rounded-2xl shadow-lg sticky top-0 z-10">
                         <button id="viewSummaryBtn" class="px-8 py-3 rounded-xl text-xs font-black transition-all ${state.viewMode === 'summary' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500'}">通知書表示</button>
                         <button id="viewTreeBtn" class="px-8 py-3 rounded-xl text-xs font-black transition-all ${state.viewMode === 'tree' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500'}">データ構造</button>
@@ -370,18 +367,12 @@ const render = () => {
 };
 
 const renderDocument = (data: UniversalData) => {
-    // Determine layout based on type
-    if (data.isBonusNotice) {
-        return renderBonusNotice(data);
-    }
-    
+    if (data.isBonusNotice) return renderBonusNotice(data);
     const isNotice = (data.paragraphs.length > 0 || data.appendices.length > 0) && data.sections.length === 0;
     if (isNotice) return renderStandardNotice(data);
-
     return renderStandardTable(data);
 };
 
-// --- Notice Rendering Logic (Standard Text Notice) ---
 const renderStandardNotice = (data: UniversalData) => {
     const findOfficeVal = (pattern: RegExp) => {
         const key = Object.keys(data.officeInfo).find(k => k.match(pattern)) || Object.keys(data.headers).find(k => k.match(pattern));
@@ -392,7 +383,7 @@ const renderStandardNotice = (data: UniversalData) => {
     const officeNum = findOfficeVal(/事業所番号/);
 
     return `
-        <div class="bg-white shadow-2xl w-full max-w-[900px] min-h-[1200px] p-10 md:p-16 text-slate-900 rounded-sm relative mb-20 leading-relaxed font-['Noto_Sans_JP']">
+        <div class="bg-white shadow-2xl w-full max-w-[900px] min-h-[1200px] h-auto flex-shrink-0 p-10 md:p-16 text-slate-900 rounded-sm relative mb-20 leading-relaxed font-['Noto_Sans_JP']">
             <div class="flex justify-between items-start mb-8 text-[12px] font-bold">
                 <div class="flex gap-10">
                     <div class="space-y-0.5"><p>健康保険</p><p>厚生年金保険</p><p>国民年金</p></div>
@@ -417,14 +408,12 @@ const renderStandardNotice = (data: UniversalData) => {
     `;
 };
 
-// --- Bonus Notice Rendering Logic (The Requested N7150001 Format) ---
 const renderBonusNotice = (data: UniversalData) => {
     const mainSection = data.sections.find(s => s.name === "被保険者データ");
     const rows = mainSection?.data || [];
     
     return `
-        <div class="bg-white shadow-2xl w-full max-w-[900px] min-h-[1200px] p-10 md:p-16 text-slate-900 rounded-sm relative mb-20 leading-relaxed font-['Noto_Sans_JP']">
-            <!-- Header Block -->
+        <div class="bg-white shadow-2xl w-full max-w-[900px] min-h-[1200px] h-auto flex-shrink-0 p-10 md:p-16 text-slate-900 rounded-sm relative mb-20 leading-relaxed font-['Noto_Sans_JP']">
             <div class="flex justify-between items-start mb-8 text-[12px] font-bold">
                 <div class="space-y-1">
                     <p>${data.postCode || ''}</p>
@@ -444,22 +433,12 @@ const renderBonusNotice = (data: UniversalData) => {
                 </div>
             </div>
 
-            <div class="text-center mb-10">
-                <h1 class="text-[19px] font-bold tracking-widest">${data.title}</h1>
-            </div>
-
+            <div class="text-center mb-10"><h1 class="text-[19px] font-bold tracking-widest">${data.title}</h1></div>
             <div class="mb-6 space-y-1 text-[13px] font-bold">
-                <div class="flex">
-                    <span class="w-32">事業所整理記号</span>
-                    <span>${data.officeInfo["事業所整理記号"] || ''}</span>
-                </div>
-                <div class="flex">
-                    <span class="w-32">事業所番号</span>
-                    <span>${data.officeInfo["事業所番号"] || ''}</span>
-                </div>
+                <div class="flex"><span class="w-32">事業所整理記号</span><span>${data.officeInfo["事業所整理記号"] || ''}</span></div>
+                <div class="flex"><span class="w-32">事業所番号</span><span>${data.officeInfo["事業所番号"] || ''}</span></div>
             </div>
 
-            <!-- Main Table -->
             <table class="w-full border-collapse border border-slate-900 text-[11px] font-bold mb-10">
                 <thead>
                     <tr class="bg-slate-50">
@@ -496,26 +475,21 @@ const renderBonusNotice = (data: UniversalData) => {
                 </tbody>
             </table>
 
-            <!-- Footer Legends and Texts -->
             <div class="text-[10px] space-y-2 font-medium mb-12">
                 <p>※1　元号　　S：昭和　H：平成　R：令和</p>
                 <p>※2　種別　　第一種：男性　第二種：女性　第三種：坑内員　特例第一種：男性（基金加入）　特例第二種：女性（基金加入）</p>
                 <p class="ml-14">特例第三種：坑内員（基金加入）</p>
                 <p class="text-[12px] mt-10 ml-10">上記のとおり標準賞与額が決定されたので通知します。</p>
             </div>
-
-            <div class="text-right text-[14px] font-bold mt-10">
-                <p>${data.creationDate || ''}</p>
-            </div>
+            <div class="text-right text-[14px] font-bold mt-10"><p>${data.creationDate || ''}</p></div>
         </div>
     `;
 };
 
-// --- Standard Table Rendering Logic (Standard Remuneration etc.) ---
 const renderStandardTable = (data: UniversalData) => {
     const calcs = calculateHalfAmount(data);
     return `
-        <div class="bg-white shadow-2xl w-full max-w-[900px] min-h-[1200px] p-24 md:p-32 text-slate-900 rounded-sm relative mb-20 font-['Noto_Sans_JP']">
+        <div class="bg-white shadow-2xl w-full max-w-[900px] min-h-[1200px] h-auto flex-shrink-0 p-10 md:p-16 text-slate-900 rounded-sm relative mb-20 font-['Noto_Sans_JP']">
             <div class="flex justify-between mb-20 text-sm font-bold">
                 <div>
                     <p class="text-slate-400">〒 ${data.postCode || '--- ----'}</p>
