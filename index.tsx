@@ -60,6 +60,7 @@ const state = {
 };
 
 const addLog = (msg: string) => {
+    console.log(msg);
     state.logs.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
     if (state.logs.length > 50) state.logs.shift();
 };
@@ -115,7 +116,6 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
         const name = n.name;
         const val = n.content || "";
 
-        // 柔軟な情報抽出（シノニム対応）
         if (name.includes("到達番号") || name === "ArrivalNumber") arrivalNumber = val || arrivalNumber;
         if (name.includes("郵便番号") || name === "PostCode") postCode = val || postCode;
         if (name.includes("所在地") || name.includes("住所") || name === "Address" || name === "T002") address = val || address;
@@ -133,7 +133,6 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
             return;
         }
 
-        // リスト（テーブルデータ）の検出
         const counts: Record<string, number> = {};
         n.children.forEach(c => counts[c.name] = (counts[c.name] || 0) + 1);
         const listTag = Object.keys(counts).find(tag => counts[tag] > 1);
@@ -176,14 +175,14 @@ const handleUpload = async (e: Event) => {
     state.isLoading = true;
     state.cases = [];
     state.logs = [];
-    addLog(`${rawFiles.length} 個の対象を解析中...`);
+    addLog(`${rawFiles.length} 個のファイルを解析開始...`);
     render();
 
     const caseMap = new Map<string, AppFile[]>();
     const allPdfs = new Set<string>();
 
     const addToFileMap = (path: string, fileName: string, content: string) => {
-        const dir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : "ルート";
+        const dirPath = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : "ルート";
         
         if (fileName.toLowerCase().endsWith('.pdf')) {
             allPdfs.add(path);
@@ -211,57 +210,66 @@ const handleUpload = async (e: Event) => {
                     detectedXsl
                 };
 
-                if (!caseMap.has(dir)) caseMap.set(dir, []);
-                caseMap.get(dir)!.push(fileEntry);
+                if (!caseMap.has(dirPath)) caseMap.set(dirPath, []);
+                caseMap.get(dirPath)!.push(fileEntry);
             } catch (err) {
                 addLog(`解析失敗: ${fileName}`);
             }
         }
     };
 
-    for (const f of rawFiles) {
-        if (f.name.toLowerCase().endsWith('.zip')) {
-            try {
-                const zip = await JSZip.loadAsync(f);
-                for (const filename of Object.keys(zip.files)) {
-                    if (zip.files[filename].dir) continue;
-                    const content = await zip.files[filename].async('string');
-                    const baseName = filename.split('/').pop() || filename;
-                    addToFileMap(filename, baseName, content);
-                }
-            } catch (err) {
-                addLog(`ZIPエラー: ${f.name}`);
+    try {
+        for (const f of rawFiles) {
+            if (f.name.toLowerCase().endsWith('.zip')) {
+                addLog(`ZIPファイルを展開中: ${f.name}`);
+                const zip = new JSZip();
+                const loadedZip = await zip.loadAsync(f);
+                
+                // ZIP内の全ファイルを非同期で読み込み
+                const promises: Promise<void>[] = [];
+                loadedZip.forEach((relativePath, file) => {
+                    if (file.dir) return;
+                    promises.push((async () => {
+                        const content = await file.async('string');
+                        const baseName = relativePath.split('/').pop() || relativePath;
+                        addToFileMap(relativePath, baseName, content);
+                    })());
+                });
+                await Promise.all(promises);
+                addLog(`ZIP展開完了: ${f.name}`);
+            } else {
+                const path = (f as any).webkitRelativePath || f.name;
+                const content = await f.text();
+                addToFileMap(path, f.name, content);
             }
-        } else {
-            const path = (f as any).webkitRelativePath || f.name;
-            const content = await f.text();
-            addToFileMap(path, f.name, content);
         }
-    }
 
-    state.cases = Array.from(caseMap.entries()).map(([dir, xmls]) => {
-        xmls.forEach(xml => {
-            const xmlBase = xml.fullPath.substring(0, xml.fullPath.lastIndexOf('.'));
-            xml.hasPdf = Array.from(allPdfs).some(p => p.startsWith(xmlBase));
+        state.cases = Array.from(caseMap.entries()).map(([dir, xmls]) => {
+            xmls.forEach(xml => {
+                const xmlBase = xml.fullPath.substring(0, xml.fullPath.lastIndexOf('.'));
+                xml.hasPdf = Array.from(allPdfs).some(p => p.startsWith(xmlBase));
+            });
+            return {
+                folderPath: dir,
+                folderName: dir.split('/').pop() || dir,
+                files: xmls,
+                isOpen: true
+            };
         });
-        return {
-            folderPath: dir,
-            folderName: dir.split('/').pop() || dir,
-            files: xmls,
-            isOpen: true
-        };
-    });
 
-    if (state.cases.length > 0) {
-        state.selectedCaseIdx = 0;
-        state.selectedFileIdx = 0;
-        addLog(`${state.cases.length} 個の案件、計 ${state.cases.reduce((acc, c) => acc + c.files.length, 0)} 個のXMLをロードしました。`);
-    } else {
-        addLog("XMLファイルが見つかりませんでした。");
+        if (state.cases.length > 0) {
+            state.selectedCaseIdx = 0;
+            state.selectedFileIdx = 0;
+            addLog(`解析成功: ${state.cases.length} 案件 (${state.cases.reduce((a, c) => a + c.files.length, 0)} ファイル)`);
+        } else {
+            addLog("表示可能な通知書(XML)が見つかりませんでした。");
+        }
+    } catch (err) {
+        addLog(`重大なエラー: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+        state.isLoading = false;
+        render();
     }
-
-    state.isLoading = false;
-    render();
 };
 
 const render = () => {
@@ -336,7 +344,7 @@ const render = () => {
             </header>
 
             <div class="flex-1 flex overflow-hidden">
-                <!-- Sidebar: VS Code Style Folder Tree -->
+                <!-- Sidebar -->
                 <aside class="w-85 bg-white border-r border-slate-200 flex flex-col shadow-inner select-none">
                     <div class="p-6 border-b bg-slate-50/50">
                         <h2 class="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
@@ -383,7 +391,7 @@ const render = () => {
                 </main>
             </div>
 
-            <!-- Debug / Log Footer -->
+            <!-- Debug Console -->
             <footer class="bg-slate-900 text-blue-200 px-8 py-3 h-40 border-t border-slate-800 font-mono text-[10px] overflow-y-auto shadow-2xl relative z-50">
                 <div class="flex justify-between items-center mb-3 sticky top-0 bg-slate-900 py-1 border-b border-white/5">
                     <span class="font-black text-slate-500 uppercase tracking-widest flex items-center gap-2"><i data-lucide="terminal" size="12"></i> System Console</span>
@@ -405,7 +413,6 @@ const renderDocument = (data: UniversalData, file: AppFile) => {
     const calculations = calculateIfPossible(data);
     return `
         <div class="bg-white shadow-[0_30px_60px_-15px_rgba(0,0,0,0.3)] w-full max-w-[850px] min-h-[1100px] p-16 md:p-24 text-slate-900 relative border border-slate-200 mb-20 animate-in fade-in zoom-in-95 duration-500">
-            <!-- Header Grid -->
             <div class="flex justify-between items-start mb-16">
                 <div class="text-[15px] font-bold leading-relaxed">
                     <p class="mb-1 tracking-tighter">〒 ${data.postCode || '--- ----'}</p>
@@ -422,14 +429,12 @@ const renderDocument = (data: UniversalData, file: AppFile) => {
                 </div>
             </div>
 
-            <!-- Main Title -->
             <div class="text-center mb-20">
                 <h1 class="text-3xl font-black border-b-[3px] border-slate-900 inline-block px-14 pb-1.5 tracking-tighter leading-tight">
                     ${data.title}
                 </h1>
             </div>
 
-            <!-- Office Identifiers -->
             <div class="flex gap-16 mb-14 bg-slate-50/50 p-6 rounded-3xl border border-slate-100">
                 <div>
                     <span class="text-[10px] font-black text-slate-400 block mb-2 uppercase tracking-widest">事業所整理記号</span>
@@ -441,7 +446,6 @@ const renderDocument = (data: UniversalData, file: AppFile) => {
                 </div>
             </div>
 
-            <!-- Table Sections -->
             ${data.sections.map(section => `
                 <div class="mb-16 overflow-x-auto">
                     <table class="w-full border-collapse border-[2px] border-slate-900 text-[12px] leading-tight">
@@ -492,12 +496,10 @@ const renderDocument = (data: UniversalData, file: AppFile) => {
                 </div>
             `).join('')}
 
-            <!-- Footer Details -->
             <div class="mt-24 text-[11px] space-y-3 text-slate-400 font-bold border-t border-slate-100 pt-10">
                 <p>※1 元号略号： S (昭和), H (平成), R (令和)</p>
                 <p>※2 種別区分： 第一種 (男性), 第二種 (女性), 第三種 (坑内員) 等</p>
                 <p class="mt-6 text-slate-600 font-black">上記の通り、健康保険法および厚生年金保険法に基づき標準報酬が決定されましたので通知いたします。</p>
-                
                 <div class="pt-16 flex justify-between items-end text-slate-900">
                     <div class="font-black">
                         <p class="mb-5 text-[14px]">${data.creationDate || '令和7年12月 5日'}</p>
