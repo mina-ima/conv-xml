@@ -496,7 +496,16 @@ const render = () => {
     if (!root) return;
     if (state.isLoading) { root.innerHTML = `<div class="h-screen flex items-center justify-center bg-slate-900 text-white animate-pulse text-xl">解析中...</div>`; return; }
     if (state.cases.length === 0) {
-        root.innerHTML = `<div class="h-screen flex items-center justify-center bg-slate-50"><label class="bg-blue-600 text-white px-10 py-5 rounded-2xl font-bold cursor-pointer shadow-xl hover:bg-blue-700 transition-all">ファイル読込 (XML/ZIP)<input type="file" id="zipIn" class="hidden" accept=".zip,.xml" /></label></div>`;
+        root.innerHTML = `
+            <div class="h-screen flex flex-col items-center justify-center bg-slate-50 p-6">
+                <h1 class="text-6xl font-black mb-12 text-slate-800 tracking-tight">e-GOV公文書確認用</h1>
+                <label class="bg-blue-600 text-white px-12 py-6 rounded-2xl font-bold text-xl cursor-pointer shadow-2xl hover:bg-blue-700 hover:scale-105 active:scale-95 transition-all duration-300">
+                    ファイル読込 (XML/ZIP)
+                    <input type="file" id="zipIn" class="hidden" accept=".zip,.xml" />
+                </label>
+                <p class="mt-8 text-slate-400 font-medium">XMLまたはZIPファイルをこちらにドラッグ＆ドロップしてください</p>
+            </div>
+        `;
         document.getElementById('zipIn')?.addEventListener('change', handleUpload); return;
     }
     const cur = state.cases[state.selectedCaseIdx]?.files[state.selectedFileIdx];
