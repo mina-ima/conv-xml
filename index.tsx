@@ -73,6 +73,7 @@ const state = {
     viewMode: 'summary' as 'summary' | 'tree',
     showSettings: false,
     showCalcResults: false,
+    isSimulating: false, // シミュレーションフロー中かどうか
     isLoading: false,
     loadingMsg: "",
     logs: [] as string[],
@@ -405,7 +406,7 @@ const render = () => {
                 body { background: white !important; margin: 0; padding: 0; }
                 main { padding: 0 !important; background: white !important; overflow: visible !important; }
                 .print-container { width: 100% !important; margin: 0 !important; padding: 0 !important; }
-                .bg-white { shadow: none !important; border: none !important; }
+                .bg-white { box-shadow: none !important; border: none !important; }
                 @page { margin: 10mm; }
             }
         </style>
@@ -428,52 +429,69 @@ const renderCalculationOverlay = (data: UniversalData) => {
     const rows = mainSection?.data || [];
     
     const calculateRow = (row: any) => {
-        const salaryStr = row["決定後の標準報酬月額_健保"] || row["決定後の標準賞与額_健保"] || "0";
-        const salary = parseInt(salaryStr.replace(/[^0-9]/g, "")) || 0;
-        const health = Math.floor(salary * (state.rates.health / 100));
-        const pension = Math.floor(salary * (state.rates.pension / 100));
-        return { health, pension, total: health + pension };
+        // 標準報酬/賞与額の取得
+        const hSalaryStr = row["決定後の標準報酬月額_健保"] || row["決定後の標準賞与額_健保"] || "0";
+        const pSalaryStr = row["決定後の標準報酬月額_厚年"] || row["決定後の標準賞与額_厚年"] || "0";
+        
+        const hSalary = parseInt(hSalaryStr.replace(/[^0-9]/g, "")) || 0;
+        const pSalary = parseInt(pSalaryStr.replace(/[^0-9]/g, "")) || 0;
+
+        // 健康保険料（従業員負担分: 折半）
+        const healthEmp = Math.floor((hSalary * (state.rates.health / 100)) / 2);
+        // 厚生年金保険料（従業員負担分: 折半）
+        const pensionEmp = Math.floor((pSalary * (state.rates.pension / 100)) / 2);
+        // 介護保険料（従業員負担分: 折半 - 健保報酬額ベース）
+        const nursingEmp = Math.floor((hSalary * (state.rates.nursing / 100)) / 2);
+
+        const totalEmp = healthEmp + pensionEmp + nursingEmp;
+
+        return { 
+            hSalary, 
+            pSalary, 
+            healthEmp, 
+            pensionEmp, 
+            nursingEmp, 
+            totalEmp 
+        };
     };
 
     return `
         <div class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
-            <div class="bg-white rounded-[2.5rem] w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
+            <div class="bg-white rounded-[2.5rem] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
                 <div class="p-8 border-b flex justify-between items-center bg-slate-50">
                     <div>
-                        <h2 class="text-2xl font-black tracking-tighter">保険料計算シミュレーション</h2>
-                        <p class="text-xs text-slate-500 font-bold mt-1">設定された料率に基づき、概算を算出しています</p>
+                        <h2 class="text-2xl font-black tracking-tighter">保険料計算結果（従業員負担分シミュレーション）</h2>
+                        <p class="text-xs text-slate-500 font-bold mt-1">以下の料率で計算しています: 健保 ${state.rates.health}% / 厚年 ${state.rates.pension}% / 介護 ${state.rates.nursing}%</p>
                     </div>
-                    <div class="flex gap-4 items-center">
-                        <div class="flex gap-2 text-[10px] font-black uppercase text-slate-400">
-                            <span>健保: ${state.rates.health}%</span>
-                            <span>厚年: ${state.rates.pension}%</span>
-                        </div>
-                        <button id="closeCalcBtn" class="w-10 h-10 bg-slate-200 rounded-full flex items-center justify-center hover:bg-slate-300 transition-all"><i data-lucide="x" size="20"></i></button>
-                    </div>
+                    <button id="closeCalcBtn" class="w-10 h-10 bg-slate-200 rounded-full flex items-center justify-center hover:bg-slate-300 transition-all"><i data-lucide="x" size="20"></i></button>
                 </div>
                 <div class="flex-1 overflow-y-auto p-8">
                     <table class="w-full border-collapse">
                         <thead>
-                            <tr class="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b">
-                                <th class="text-left py-4 px-2">整理番号</th>
-                                <th class="text-left py-4 px-2">氏名</th>
-                                <th class="text-right py-4 px-2">標準報酬</th>
-                                <th class="text-right py-4 px-2 bg-blue-50">健康保険料 (全額)</th>
-                                <th class="text-right py-4 px-2 bg-indigo-50">厚生年金料 (全額)</th>
-                                <th class="text-right py-4 px-2 bg-slate-900 text-white rounded-t-xl">合計 (折半前)</th>
+                            <tr class="text-[9px] font-black text-slate-400 uppercase tracking-widest border-b text-center">
+                                <th class="py-4 px-2 text-left">整理番号</th>
+                                <th class="py-4 px-2 text-left">被保険者氏名</th>
+                                <th class="py-4 px-2 text-right">標準額(健保)</th>
+                                <th class="py-4 px-2 text-right">標準額(厚年)</th>
+                                <th class="py-4 px-2 text-right bg-blue-50">健保料(本人)</th>
+                                <th class="py-4 px-2 text-right bg-indigo-50">厚年料(本人)</th>
+                                <th class="py-4 px-2 text-right bg-emerald-50">介護料(本人)</th>
+                                <th class="py-4 px-2 text-right bg-slate-900 text-white rounded-t-xl">合計(本人)</th>
                             </tr>
                         </thead>
-                        <tbody class="divide-y text-sm">
+                        <tbody class="divide-y text-[13px]">
                             ${rows.map(row => {
                                 const res = calculateRow(row);
                                 return `
                                     <tr class="hover:bg-slate-50">
                                         <td class="py-4 px-2 font-mono">${row["被保険者整理番号"] || "-"}</td>
                                         <td class="py-4 px-2 font-black">${row["被保険者氏名"] || "-"}</td>
-                                        <td class="py-4 px-2 text-right font-mono">${row["決定後の標準報酬月額_健保"] || row["決定後の標準賞与額_健保"] || "-"}</td>
-                                        <td class="py-4 px-2 text-right font-mono font-bold text-blue-600 bg-blue-50/30">${res.health.toLocaleString()} 円</td>
-                                        <td class="py-4 px-2 text-right font-mono font-bold text-indigo-600 bg-indigo-50/30">${res.pension.toLocaleString()} 円</td>
-                                        <td class="py-4 px-2 text-right font-mono font-black text-white bg-slate-800">${res.total.toLocaleString()} 円</td>
+                                        <td class="py-4 px-2 text-right font-mono">${res.hSalary.toLocaleString()} 円</td>
+                                        <td class="py-4 px-2 text-right font-mono">${res.pSalary.toLocaleString()} 円</td>
+                                        <td class="py-4 px-2 text-right font-mono font-bold text-blue-600 bg-blue-50/30">${res.healthEmp.toLocaleString()} 円</td>
+                                        <td class="py-4 px-2 text-right font-mono font-bold text-indigo-600 bg-indigo-50/30">${res.pensionEmp.toLocaleString()} 円</td>
+                                        <td class="py-4 px-2 text-right font-mono font-bold text-emerald-600 bg-emerald-50/30">${res.nursingEmp.toLocaleString()} 円</td>
+                                        <td class="py-4 px-2 text-right font-mono font-black text-white bg-slate-800">${res.totalEmp.toLocaleString()} 円</td>
                                     </tr>
                                 `;
                             }).join('')}
@@ -481,8 +499,11 @@ const renderCalculationOverlay = (data: UniversalData) => {
                     </table>
                 </div>
                 <div class="p-8 bg-slate-50 border-t flex justify-between items-center">
-                    <p class="text-[11px] text-slate-400 leading-relaxed font-bold">※折半額（本人負担・会社負担）は上記金額の半分となります。<br>※端数処理の都合上、実際の通知額と数円の誤差が生じる場合があります。</p>
-                    <button id="calcToCsvBtn" class="bg-slate-900 text-white px-8 py-4 rounded-2xl font-black text-xs shadow-xl flex items-center gap-2 hover:scale-105 transition-all"><i data-lucide="download" size="16"></i> 計算結果を保存</button>
+                    <p class="text-[11px] text-slate-400 leading-relaxed font-bold">※金額はすべて「従業員負担分（折半額）」の概算です。<br>※介護保険料は、40歳から64歳までの被保険者が対象となります。</p>
+                    <div class="flex gap-4">
+                        <button id="calcToCsvBtn" class="bg-white border border-slate-300 text-slate-900 px-8 py-4 rounded-2xl font-black text-xs shadow-sm flex items-center gap-2 hover:bg-slate-100 transition-all"><i data-lucide="download" size="16"></i> 結果をCSV保存</button>
+                        <button id="closeCalcBtnBottom" class="bg-blue-600 text-white px-8 py-4 rounded-2xl font-black text-xs shadow-xl flex items-center gap-2 hover:scale-105 transition-all">確認終了</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -531,7 +552,6 @@ const renderSummarySheet = (data: UniversalData) => {
         <div class="bg-white shadow-2xl w-full max-w-[1000px] min-h-[1200px] h-auto flex-shrink-0 p-10 md:p-12 text-slate-900 rounded-sm relative mb-20 leading-relaxed font-['Noto_Sans_JP']">
             <div class="flex justify-between items-start mb-8 font-bold"><div class="flex gap-10"><div class="text-[12px] space-y-0.5"><p>健康保険</p><p>厚生年金保険</p><p>国民年金</p></div><h2 class="text-[20px] self-center tracking-[0.2em] ml-4">CSV形式届書総括票</h2></div><div class="border-2 border-slate-900 px-8 py-3 text-[16px] font-black">電子申請用</div></div>
             <div class="grid grid-cols-2 gap-x-12 gap-y-3 mb-10 text-[13px] font-bold"><div class="flex border-b border-slate-400 pb-1"><span>①識別情報</span><span class="ml-10 font-mono">${data.arrivalNumber}</span></div><div class="flex border-b border-slate-400 pb-1"><span>②作成年月日</span><span class="ml-10">${data.creationDate}</span></div><div class="flex border-b border-slate-400 pb-1"><span>③事業所整理記号</span><span class="ml-4 font-mono">${data.officeInfo["事業所整理記号"]}</span></div><div class="flex border-b border-slate-400 pb-1"><span>④事業所番号</span><span class="ml-10 font-mono">${data.officeInfo["事業所番号"]}</span></div></div>
-            <div class="grid grid-cols-12 gap-6 mb-12"><div class="col-span-7"><p class="text-[11px] font-bold mb-1">届書総件数（健康保険・厚生年金保険）</p><div class="border-2 border-slate-900">${row("資格取得届/70歳以上被用者該当届", d["届書総件数x資格取得届70歳以上被用者該当届"], "⑤")}${row("被扶養者異動届/国民年金第3号被保険者関係届", d["届書数x被扶養者異動国年3号被保険者関係届"], "⑥")}${row("資格喪失届/70歳以上被用者不該当届", d["届書数x資格喪失届70歳以上被用者不該当届"], "⑦")}${row("月額変更届/70歳以上被用者月額変更届", d["届書数x月額変更届70歳以上被用者月額変更届"], "⑧")}${row("算定基礎届/70歳以上被用者算定基礎届", d["届書数x算定基礎届70歳以上被用者算定基礎届"], "⑨")}${row("賞与支払届/70歳以上被用者賞与支払届", d["届書数x賞与支払届70歳以上被用者賞与支払届"], "⑩")}${row("育児休業等取得者申出書(新規・延長)/終了届", d["届書数x育児休業等取得者申出書終了届"], "⑪")}${row("産前産後休業取得者申出書/変更(終了)届", d["届書数x産前産後休業取得者申出書変更届"], "⑫")}<div class="flex h-12 bg-slate-50"><div class="flex items-center flex-1 justify-center text-[12px] font-black border-r border-slate-900">⑬届書合計</div><div class="flex items-center w-24 justify-end px-3 text-[16px] font-black font-mono">${d["届書総件数x届書合計"] || ""} <span class="text-[10px] ml-1">件</span></div></div></div></div></div>
         </div>
     `;
 };
@@ -569,12 +589,19 @@ const renderTree = (node: XMLNode): string => {
     return `<div class="bg-slate-900 p-10 rounded-3xl w-full max-w-4xl font-mono text-xs text-blue-100 overflow-auto">${traverse(node)}</div>`;
 };
 
-const renderSettings = () => `<div class="fixed inset-0 bg-black/80 backdrop-blur-md z-[300] flex items-center justify-center p-5"><div class="bg-white p-12 rounded-[3rem] max-w-md w-full shadow-2xl"><h2 class="text-3xl font-black mb-8 tracking-tighter">保険料率設定</h2><div class="space-y-6">${Object.entries(state.rates).map(([k, v]) => `<div><label class="block text-[10px] font-black text-slate-400 mb-2 uppercase">${k}</label><input type="number" step="0.01" value="${v}" data-key="${k}" class="rate-input w-full p-4 bg-slate-100 rounded-2xl font-black text-2xl" /></div>`).join('')}</div><button id="closeSettings" class="w-full mt-10 py-5 bg-blue-600 text-white font-black rounded-2xl shadow-xl hover:scale-105 transition-all">保存して閉じる</button></div></div>`;
+const renderSettings = () => `<div class="fixed inset-0 bg-black/80 backdrop-blur-md z-[300] flex items-center justify-center p-5"><div class="bg-white p-12 rounded-[3rem] max-w-md w-full shadow-2xl"><h2 class="text-3xl font-black mb-4 tracking-tighter">保険料率設定</h2><p class="text-xs text-slate-400 mb-8 font-bold">シミュレーションに使用する料率を入力してください</p><div class="space-y-6">${Object.entries(state.rates).map(([k, v]) => `<div><label class="block text-[10px] font-black text-slate-400 mb-2 uppercase">${k === 'health' ? '健康保険料率' : k === 'pension' ? '厚生年金保険料率' : '介護保険料率'} (%)</label><input type="number" step="0.001" value="${v}" data-key="${k}" class="rate-input w-full p-4 bg-slate-100 rounded-2xl font-black text-2xl" /></div>`).join('')}</div><button id="closeSettings" class="w-full mt-10 py-5 bg-blue-600 text-white font-black rounded-2xl shadow-xl hover:scale-105 transition-all">保存して次へ</button></div></div>`;
 
 const attachEvents = () => {
     document.getElementById('resetBtn')?.addEventListener('click', () => { state.cases = []; render(); });
-    document.getElementById('toggleSettings')?.addEventListener('click', () => { state.showSettings = true; render(); });
-    document.getElementById('closeSettings')?.addEventListener('click', () => { state.showSettings = false; render(); });
+    document.getElementById('toggleSettings')?.addEventListener('click', () => { state.showSettings = true; state.isSimulating = false; render(); });
+    document.getElementById('closeSettings')?.addEventListener('click', () => { 
+        state.showSettings = false; 
+        if (state.isSimulating) {
+            state.showCalcResults = true;
+            state.isSimulating = false;
+        }
+        render(); 
+    });
     document.getElementById('viewSummaryBtn')?.addEventListener('click', () => { state.viewMode = 'summary'; render(); });
     document.getElementById('viewTreeBtn')?.addEventListener('click', () => { state.viewMode = 'tree'; render(); });
     document.getElementById('csvExportBtn')?.addEventListener('click', () => { 
@@ -582,8 +609,13 @@ const attachEvents = () => {
         if (currentFile?.analysis) exportToCSV(currentFile.analysis);
     });
     document.getElementById('printBtn')?.addEventListener('click', () => { window.print(); });
-    document.getElementById('calcMenuBtn')?.addEventListener('click', () => { state.showCalcResults = true; render(); });
+    document.getElementById('calcMenuBtn')?.addEventListener('click', () => { 
+        state.showSettings = true; 
+        state.isSimulating = true;
+        render(); 
+    });
     document.getElementById('closeCalcBtn')?.addEventListener('click', () => { state.showCalcResults = false; render(); });
+    document.getElementById('closeCalcBtnBottom')?.addEventListener('click', () => { state.showCalcResults = false; render(); });
     
     document.querySelectorAll('.toggle-case-btn').forEach(btn => btn.addEventListener('click', (e) => { const idx = parseInt((e.currentTarget as HTMLElement).dataset.index!); state.cases[idx].isOpen = !state.cases[idx].isOpen; render(); }));
     document.querySelectorAll('.select-file-btn').forEach(btn => btn.addEventListener('click', (e) => { const target = e.currentTarget as HTMLElement; state.selectedCaseIdx = parseInt(target.dataset.case!); state.selectedFileIdx = parseInt(target.dataset.file!); render(); }));
