@@ -277,7 +277,6 @@ const downloadCSV = () => {
 
     let csv = "";
     if (state.viewMode === 'calculator') {
-        // シミュレーター用の特別CSV出力 (8項目)
         const headers = ["氏名", "年齢", "健保標準額", "厚年標準額", "健保控除", "厚年控除", "介護控除", "控除額合計"];
         csv = [headers.join(","), ...data.rows.map(r => {
             const birthData = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]);
@@ -295,7 +294,6 @@ const downloadCSV = () => {
             return [`"${normalize(r["被保険者氏名"])}"`, age, amtH, amtP, hDeduct, pDeduct, nDeduct, total].join(",");
         })].join("\n");
     } else {
-        // 通常の決定通知データ出力
         const h = ["整理番号", "氏名", "支払日/適用月", "標準額(健保)", "標準額(厚年)", "生年月日", "種別"];
         csv = [h.join(","), ...data.rows.map(r => {
             const datePrefix = isBonus ? "賞与支払年月日" : "適用年月";
@@ -316,51 +314,27 @@ const downloadCSV = () => {
     link.click();
 };
 
-// --- Rendering: Announcement Sheet (お知らせ) ---
 const renderAnnouncementSheet = (data: UniversalData) => {
     return `
-        <div class="bg-white w-[1000px] min-h-[1414px] p-24 text-black shadow-2xl relative font-['Noto_Sans_JP'] border border-slate-200 mx-auto">
+        <div class="bg-white w-[1000px] min-h-[1414px] p-24 text-black shadow-2xl relative font-['Noto_Sans_JP'] border border-slate-200 mx-auto print:shadow-none print:border-none">
             <div class="flex flex-col items-end text-lg font-bold mb-8">
                 <p>${data.docNo || ''}</p>
                 <p>${data.creationDateJP || ''}</p>
             </div>
-            
-            <div class="mb-16">
-                <p class="text-xl font-bold">${data.recipient?.aff || ''}</p>
-                <p class="text-xl font-bold">${data.recipient?.name || ''}　${data.recipient?.honorific || ''}</p>
-            </div>
-
-            <div class="flex flex-col items-end mb-24">
-                <p class="text-lg font-bold">${data.senderAff || ''}</p>
-                <p class="text-lg font-bold">${data.senderName || ''}</p>
-            </div>
-
-            <div class="text-center mb-16">
-                <h1 class="text-3xl font-black tracking-tight">${data.title}</h1>
-            </div>
-
-            <div class="text-lg leading-relaxed space-y-6 mb-16 text-justify">
-                ${(data.mainText || []).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('')}
-            </div>
-
-            <div class="space-y-4">
-                ${(data.appendices || []).map(app => `
-                    <div class="text-blue-600 font-black text-xl underline cursor-pointer hover:text-blue-800">
-                        ${app.title}
-                    </div>
-                `).join('')}
-            </div>
+            <div class="mb-16"><p class="text-xl font-bold">${data.recipient?.aff || ''}</p><p class="text-xl font-bold">${data.recipient?.name || ''}　${data.recipient?.honorific || ''}</p></div>
+            <div class="flex flex-col items-end mb-24"><p class="text-lg font-bold">${data.senderAff || ''}</p><p class="text-lg font-bold">${data.senderName || ''}</p></div>
+            <div class="text-center mb-16"><h1 class="text-3xl font-black tracking-tight">${data.title}</h1></div>
+            <div class="text-lg leading-relaxed space-y-6 mb-16 text-justify">${(data.mainText || []).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('')}</div>
+            <div class="space-y-4 no-print">${(data.appendices || []).map(app => `<div class="text-blue-600 font-black text-xl underline cursor-pointer hover:text-blue-800">${app.title}</div>`).join('')}</div>
         </div>
     `;
 };
 
-// --- Rendering: High-Fidelity Summary Sheet ---
 const renderSummarySheet = (data: UniversalData) => {
     const labelClass = "px-2 py-1 flex items-center h-full border-r border-black text-[11px] leading-tight font-bold";
     const countValClass = "flex-1 px-4 py-1 text-right text-[14px] font-mono tracking-wider";
-
     return `
-        <div class="bg-white w-[1120px] min-h-[1580px] p-[50px] text-black shadow-2xl relative font-['MS_PMincho', 'serif'] border border-gray-400 mx-auto">
+        <div class="bg-white w-[1120px] min-h-[1580px] p-[50px] text-black shadow-2xl relative font-['MS_PMincho', 'serif'] border border-gray-400 mx-auto print:shadow-none print:border-none">
             <div class="flex justify-between items-start mb-8">
                 <div class="text-[13px] font-bold leading-tight">健康保険<br>厚生年金保険<br>国民年金</div>
                 <div class="absolute left-1/2 -translate-x-1/2 text-[28px] font-bold tracking-[0.5em] pt-2">ＣＳＶ形式届書総括票</div>
@@ -373,10 +347,7 @@ const renderSummarySheet = (data: UniversalData) => {
                 <div class="flex items-center"><span class="w-[100px] font-bold">④事業所番号</span><span class="flex-1 px-4 font-mono border-b border-black text-center py-1">${data.officeNo}</span></div>
             </div>
             <div class="flex gap-4">
-                <div class="w-[40px] flex flex-col items-center text-[10px] leading-tight space-y-8 pt-4 font-bold select-none opacity-80" style="writing-mode: vertical-rl;">
-                    <p>◎必ず電子署名を付して申請してください。</p>
-                    <p>◎入力方法については、記載要領をご覧ください。</p>
-                </div>
+                <div class="w-[40px] flex flex-col items-center text-[10px] leading-tight space-y-8 pt-4 font-bold select-none opacity-80" style="writing-mode: vertical-rl;"><p>◎必ず電子署名を付して申請してください。</p><p>◎入力方法については、記載要領をご覧ください。</p></div>
                 <div class="flex-1 flex gap-4">
                     <div class="flex-1">
                         <p class="text-[12px] font-bold mb-1 text-center">届書総件数（健康保険・厚生年金保険）</p>
@@ -428,11 +399,10 @@ const renderSummarySheet = (data: UniversalData) => {
     `;
 };
 
-// --- Rendering: High-Fidelity Notice Sheet ---
 const renderNoticeSheet = (data: UniversalData) => {
     const isBonusDoc = data.docType === 'BONUS_NOTICE';
     return `
-        <div class="bg-white w-[1000px] min-h-[1414px] p-16 text-black shadow-2xl relative font-['Noto_Sans_JP'] border border-slate-200 mx-auto">
+        <div class="bg-white w-[1000px] min-h-[1414px] p-16 text-black shadow-2xl relative font-['Noto_Sans_JP'] border border-slate-200 mx-auto print:shadow-none print:border-none">
             <div class="flex justify-between items-start mb-10">
                 <div class="text-[14px] leading-relaxed space-y-1"><p class="font-bold text-lg">${data.zipCodeSuffix || ''}</p><p class="text-base">${data.address || ''}</p><p class="pt-4 text-2xl font-black tracking-tighter">${data.companyName || ''}</p><p class="text-2xl font-black">${data.ownerName || ''}　　様</p></div>
                 <div class="flex flex-col items-end"><p class="text-sm font-bold mb-1">到達番号 ${data.arrivalNumber || ''}</p><div class="border border-black p-4 w-[380px] h-[260px] text-[13px] leading-relaxed overflow-hidden text-justify">${data.noticeBox || ''}</div></div>
@@ -444,11 +414,8 @@ const renderNoticeSheet = (data: UniversalData) => {
                     const datePrefix = isBonusDoc ? "賞与支払年月日" : "適用年月";
                     const payDate = getFormattedDates(r[`${datePrefix}_元号`], r[`${datePrefix}_年`], r[`${datePrefix}_月`], r[`${datePrefix}_日`] || "1");
                     const birthDate = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]);
-                    
-                    // 金額表示の重複（千円千円）を防ぐため、数値のみを抽出しカンマ区切りで整形
                     const val1 = parseStandardAmount(r[isBonusDoc ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]).toLocaleString();
                     const val2 = parseStandardAmount(r[isBonusDoc ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]).toLocaleString();
-                    
                     return `<tr class="h-20 text-center border-b border-black"><td class="border-r border-black">${normalize(r["被保険者整理番号"] || "")}</td><td class="border-r border-black text-left px-6 font-black text-xl">${normalize(r["被保険者氏名"] || "")}</td><td class="border-r border-black"><div>${payDate.jp}</div><div class="text-blue-600 text-[11px] font-bold">(${payDate.ad})</div></td><td class="border-r border-black px-2 font-black text-lg w-32"><div class="text-[10px] font-normal text-slate-400 mb-1">(健保)</div>${val1}千円</td><td class="border-r border-black px-2 font-black text-lg w-32"><div class="text-[10px] font-normal text-slate-400 mb-1">(厚年)</div>${val2}千円</td><td class="border-r border-black"><div>${birthDate.jp}</div><div class="text-emerald-600 text-[11px] font-bold">(${birthDate.ad})</div></td><td>${normalize(r["種別"] || "")}</td></tr>`;
                 }).join('')}</tbody>
             </table>
@@ -457,17 +424,16 @@ const renderNoticeSheet = (data: UniversalData) => {
     `;
 };
 
-// --- Rendering: Updated Calculator View ---
 const renderCalculatorView = (data: UniversalData) => {
     const isBonus = data.docType === 'BONUS_NOTICE';
     return `
-        <div class="bg-white w-[1150px] min-h-[800px] p-10 text-black shadow-2xl font-['Noto_Sans_JP'] border border-gray-300 mx-auto rounded-3xl no-print">
+        <div class="bg-white w-[1150px] min-h-[800px] p-10 text-black shadow-2xl font-['Noto_Sans_JP'] border border-gray-300 mx-auto rounded-3xl print:shadow-none print:border-none">
             <div class="flex justify-between items-center mb-8 border-b pb-6">
                 <div>
                     <h2 class="text-3xl font-black text-slate-900">${data.title} - 社会保険料算出</h2>
                     <p class="text-slate-500 mt-2 font-bold">被保険者負担分シミュレーション (個人負担=事業主折半後)</p>
                 </div>
-                <div class="bg-blue-50 p-6 rounded-2xl border border-blue-100 grid grid-cols-2 gap-x-6 gap-y-3 shadow-inner">
+                <div class="bg-blue-50 p-6 rounded-2xl border border-blue-100 grid grid-cols-2 gap-x-6 gap-y-3 shadow-inner no-print">
                     <div class="flex flex-col"><label class="text-[11px] font-bold text-blue-600 mb-1">健康保険料率 (%)</label><input type="number" step="0.001" value="${state.rates.health}" class="border rounded-lg px-3 py-1 font-bold" id="rate-health"></div>
                     <div class="flex flex-col"><label class="text-[11px] font-bold text-blue-600 mb-1">厚生年金料率 (%)</label><input type="number" step="0.001" value="${state.rates.pension}" class="border rounded-lg px-3 py-1 font-bold" id="rate-pension"></div>
                     <div class="flex flex-col"><label class="text-[11px] font-bold text-blue-600 mb-1">介護保険料率 (%)</label><input type="number" step="0.001" value="${state.rates.nursing}" class="border rounded-lg px-3 py-1 font-bold" id="rate-nursing"></div>
@@ -475,41 +441,32 @@ const renderCalculatorView = (data: UniversalData) => {
                 </div>
             </div>
             <table class="w-full border-collapse border border-slate-200">
-                <thead class="bg-slate-800 text-white text-[12px]">
+                <thead class="bg-slate-800 text-white text-[12px] print:bg-slate-200 print:text-black">
                     <tr class="h-14">
                         <th class="px-3 border border-slate-600">氏名</th>
                         <th class="px-2 border border-slate-600 w-16 text-center">年齢</th>
                         <th class="px-3 border border-slate-600 text-right">健保標準額</th>
                         <th class="px-3 border border-slate-600 text-right">厚年標準額</th>
-                        <th class="px-3 border border-slate-600 text-right bg-blue-900/40">健保控除</th>
-                        <th class="px-3 border border-slate-600 text-right bg-indigo-900/40">厚年控除</th>
-                        <th class="px-3 border border-slate-600 text-right bg-teal-900/40">介護控除</th>
-                        <th class="px-4 border border-slate-600 text-right bg-slate-900 text-[14px]">控除額合計</th>
+                        <th class="px-3 border border-slate-600 text-right bg-blue-900/40 print:bg-blue-100">健保控除</th>
+                        <th class="px-3 border border-slate-600 text-right bg-indigo-900/40 print:bg-indigo-100">厚年控除</th>
+                        <th class="px-3 border border-slate-600 text-right bg-teal-900/40 print:bg-teal-100">介護控除</th>
+                        <th class="px-4 border border-slate-600 text-right bg-slate-900 text-[14px] print:bg-slate-300">控除額合計</th>
                     </tr>
                 </thead>
                 <tbody class="text-[14px]">
                     ${data.rows.map(r => {
                         const birthData = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]);
                         const age = calculateAge(birthData.ad);
-                        
-                        // 数値パース。XMLの値（千円単位）を円単位に変換
                         const rawAmtH = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
                         const rawAmtP = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
-                        
-                        // 標準額を一律1000倍して円単位で計算
                         const amtH = rawAmtH * 1000;
                         const amtP = rawAmtP * 1000;
-
-                        // 介護保険料の自動判定ロジック (40歳以上64歳以下を対象)
                         const isNursingTargetAge = age >= 40 && age <= 64;
                         const isNursingActive = state.rates.isNursingTarget ? isNursingTargetAge : false;
-
-                        // 控除額計算 (折半)
                         const hDeduct = Math.floor(amtH * (state.rates.health / 100) / 2);
                         const pDeduct = Math.floor(amtP * (state.rates.pension / 100) / 2);
                         const nDeduct = isNursingActive ? Math.floor(amtH * (state.rates.nursing / 100) / 2) : 0;
                         const total = hDeduct + pDeduct + nDeduct;
-
                         return `
                         <tr class="h-14 border-b border-slate-100 hover:bg-slate-50 transition-colors">
                             <td class="px-3 font-bold text-slate-900 text-lg">${normalize(r["被保険者氏名"])}</td>
@@ -519,7 +476,7 @@ const renderCalculatorView = (data: UniversalData) => {
                             <td class="px-3 text-right font-mono text-blue-800 font-bold">${hDeduct.toLocaleString()}円</td>
                             <td class="px-3 text-right font-mono text-indigo-800 font-bold">${pDeduct.toLocaleString()}円</td>
                             <td class="px-3 text-right font-mono ${nDeduct > 0 ? 'text-teal-800 font-bold' : 'text-slate-300'}">${nDeduct > 0 ? nDeduct.toLocaleString() + '円' : '-'}</td>
-                            <td class="px-4 text-right font-mono text-2xl font-black bg-slate-50 text-slate-900">${total.toLocaleString()}円</td>
+                            <td class="px-4 text-right font-mono text-2xl font-black bg-slate-50 text-slate-900 print:bg-slate-100">${total.toLocaleString()}円</td>
                         </tr>`;
                     }).join('')}
                 </tbody>
@@ -534,7 +491,6 @@ const renderCalculatorView = (data: UniversalData) => {
     `;
 };
 
-// --- App Control ---
 const render = () => {
     const root = document.getElementById('root');
     if (!root) return;
@@ -548,7 +504,7 @@ const render = () => {
     const isNotice = data?.docType === 'NOTICE' || data?.docType === 'BONUS_NOTICE';
 
     root.innerHTML = `
-        <div class="h-screen flex flex-col bg-slate-100 overflow-hidden">
+        <div class="h-screen flex flex-col bg-slate-100 overflow-hidden print:h-auto print:overflow-visible print:bg-white">
             <header class="bg-white border-b px-8 py-4 flex justify-between items-center z-50 no-print">
                 <div class="flex items-center gap-4">
                     <button id="home" class="p-2 border rounded-xl hover:bg-slate-50 transition-colors"><i data-lucide="home"></i></button>
@@ -567,7 +523,7 @@ const render = () => {
                     </button>
                 </div>
             </header>
-            <div class="flex-1 flex overflow-hidden">
+            <div class="flex-1 flex overflow-hidden print:block print:overflow-visible">
                 <aside class="w-80 bg-white border-r overflow-y-auto p-4 no-print">
                     ${state.cases.map((c, ci) => `
                         <button class="w-full text-left p-3 bg-slate-50 font-bold mb-2 rounded-xl toggle-case flex justify-between items-center" data-idx="${ci}">${c.folderName} <i data-lucide="${c.isOpen ? 'chevron-up' : 'chevron-down'}" size="14"></i></button>
@@ -576,27 +532,44 @@ const render = () => {
                         `).join('') : ''}
                     `).join('')}
                 </aside>
-                <main class="flex-1 bg-slate-200 overflow-y-auto p-12">
+                <main class="flex-1 bg-slate-200 overflow-y-auto p-12 print:p-0 print:bg-white print:overflow-visible print:h-auto">
                     <div class="mb-8 flex justify-center bg-white p-2 rounded-2xl w-fit mx-auto shadow-sm no-print border border-slate-300">
                         <button id="sumV" class="px-10 py-3 rounded-xl font-black ${state.viewMode !== 'tree' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}">帳票プレビュー</button>
                         <button id="treeV" class="px-10 py-3 rounded-xl font-black ${state.viewMode === 'tree' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}">XML構造解析</button>
                     </div>
-                    <div class="print-area">
+                    <div class="print-area print:m-0 print:w-full">
                         ${state.viewMode === 'calculator' && data ? renderCalculatorView(data) :
                           (state.viewMode !== 'tree' && data ? 
                             (data.docType === 'SUMMARY' ? renderSummarySheet(data) : 
                              data.docType === 'ANNOUNCEMENT' ? renderAnnouncementSheet(data) :
                              renderNoticeSheet(data)) : 
-                          (state.viewMode === 'tree' ? `<pre class="bg-slate-900 text-blue-400 p-10 rounded-3xl font-mono text-xs overflow-auto shadow-2xl">${JSON.stringify(cur?.parsed, null, 2)}</pre>` : '<div class="text-center p-20 bg-white rounded-3xl shadow">プレビュー対象外のファイルです</div>'))}
+                          (state.viewMode === 'tree' ? `<pre class="bg-slate-900 text-blue-400 p-10 rounded-3xl font-mono text-xs overflow-auto shadow-2xl">${JSON.stringify(cur?.parsed, null, 2)}</pre>` : '<div class="text-center p-20 bg-white rounded-3xl shadow no-print">プレビュー対象外のファイルです</div>'))}
                     </div>
                 </main>
             </div>
             <style>
                 @media print {
+                    html, body, #root, .flex-col, .flex-1 { 
+                        height: auto !important; 
+                        overflow: visible !important; 
+                        display: block !important; 
+                        background: white !important;
+                    }
                     .no-print, header, aside, .mb-8 { display: none !important; }
-                    main { padding: 0 !important; background: white !important; overflow: visible !important; height: auto !important; }
-                    .print-area { box-shadow: none !important; width: 100% !important; margin: 0 !important; }
-                    body { background: white !important; }
+                    main { 
+                        padding: 0 !important; 
+                        margin: 0 !important;
+                        overflow: visible !important; 
+                    }
+                    .print-area { 
+                        width: 100% !important; 
+                        margin: 0 !important; 
+                        padding: 0 !important;
+                    }
+                    * { 
+                        -webkit-print-color-adjust: exact !important; 
+                        print-color-adjust: exact !important; 
+                    }
                 }
             </style>
         </div>
