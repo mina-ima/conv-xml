@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { ChevronRight, ChevronDown, FileCode, Tag } from 'lucide-react';
+import { ChevronRight, ChevronDown, Tag } from 'lucide-react';
 import { XMLNode } from '../types';
 
 interface XMLTreeViewProps {
@@ -10,8 +10,8 @@ interface XMLTreeViewProps {
 
 const XMLTreeView: React.FC<XMLTreeViewProps> = ({ node, depth = 0 }) => {
   const [isOpen, setIsOpen] = useState(depth < 2);
-  const hasChildren = node.children.length > 0;
-  const hasAttributes = Object.keys(node.attributes).length > 0;
+  const hasChildren = node.children && node.children.length > 0;
+  const hasAttributes = node.attributes && Object.keys(node.attributes).length > 0;
 
   return (
     <div className="ml-4 font-mono text-sm">

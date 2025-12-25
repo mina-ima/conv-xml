@@ -25,7 +25,7 @@ const App: React.FC = () => {
     const parser = new DOMParser();
     const xmlDoc = parser.parseFromString(xmlString, "text/xml");
     const parseError = xmlDoc.getElementsByTagName("parsererror");
-    if (parseError.length > 0) throw new Error("XMLの解析に失敗しました。");
+    if (parseError.length > 0) throw new Error("XMLの解析に失敗しました。正しいXMLファイルか確認してください。");
 
     const traverse = (element: Element): XMLNode => {
       const attributes: Record<string, string> = {};
@@ -66,7 +66,6 @@ const App: React.FC = () => {
         setXmlContent(text);
         setParsedNode(node);
         
-        // 解析を開始（バックグラウンドで実行）
         analyzeXMLContent(text)
           .then(result => {
             setAnalysis(result);
@@ -74,7 +73,7 @@ const App: React.FC = () => {
           })
           .catch(err => {
             console.error(err);
-            setError("AIによる高度な解析が制限されました。ツリー表示で内容を直接確認できます。");
+            setError("AIによる解析に失敗しました。ファイルが大きすぎるか、構造が特殊な可能性があります。ツリー表示で内容を確認してください。");
             setIsLoading(false);
           });
           
@@ -137,7 +136,7 @@ const App: React.FC = () => {
     const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = "eGov_保険料算出結果.csv";
+    link.download = "eGov_Insurance_Calculation.csv";
     link.click();
   };
 
@@ -192,26 +191,13 @@ const App: React.FC = () => {
                 <input type="file" className="hidden" accept=".xml" onChange={handleFileUpload} />
               </label>
             </div>
-            <div className="mt-12 grid grid-cols-1 sm:grid-cols-3 gap-6 max-w-4xl w-full">
-              {[
-                { icon: <Database size={20}/>, title: "完全オフライン解析", desc: "ブラウザ上でXMLをパースするため、データはサーバーに保存されません。" },
-                { icon: <Calculator size={20}/>, title: "保険料自動計算", desc: "生年月日から年齢を判定し、最新の料率に基づき本人負担分を算出します。" },
-                { icon: <Download size={20}/>, title: "Excel連携", desc: "計算結果をそのままCSVとしてダウンロードし、給与ソフト等へ活用できます。" }
-              ].map((item, i) => (
-                <div key={i} className="p-6 bg-white rounded-2xl border border-slate-100 shadow-sm">
-                  <div className="text-blue-500 mb-3">{item.icon}</div>
-                  <h3 className="font-bold text-slate-800 mb-2">{item.title}</h3>
-                  <p className="text-sm text-slate-500 leading-relaxed">{item.desc}</p>
-                </div>
-              ))}
-            </div>
           </div>
         )}
 
         {xmlContent && (
-          <div className="space-y-6 animate-in fade-in duration-500">
+          <div className="space-y-6">
             {showSettings && (
-              <div className="p-8 bg-white rounded-3xl border border-blue-100 shadow-xl shadow-blue-500/5 animate-in slide-in-from-top-4 print:hidden">
+              <div className="p-8 bg-white rounded-3xl border border-blue-100 shadow-xl animate-in slide-in-from-top-4 print:hidden">
                 <div className="flex items-center gap-3 text-blue-700 mb-6 font-bold text-lg">
                   <Calculator size={24} className="text-blue-500" />
                   保険料率の設定（%）
@@ -228,16 +214,13 @@ const App: React.FC = () => {
                           step="0.001" 
                           value={val} 
                           onChange={e => setRates({...rates, [key]: parseFloat(e.target.value)})} 
-                          className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl font-mono text-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                          className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"
                         />
                         <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">%</span>
                       </div>
                     </div>
                   ))}
                 </div>
-                <p className="mt-6 text-xs text-slate-400 flex items-center gap-2 italic">
-                  <Info size={14} /> 組合や地域ごとの最新の保険料率を入力してください。
-                </p>
               </div>
             )}
 
@@ -246,29 +229,25 @@ const App: React.FC = () => {
                 {isLoading && (
                   <div className="flex flex-col items-center justify-center p-16 bg-blue-50/30 rounded-[2rem] border-2 border-dashed border-blue-100">
                     <Loader2 className="animate-spin text-blue-600 mb-4" size={40} />
-                    <p className="font-bold text-blue-800 text-lg">AIが帳票データを抽出しています...</p>
-                    <p className="text-blue-500/70 text-sm mt-2">少々お待ちください</p>
+                    <p className="font-bold text-blue-800 text-lg">AIが帳票データを解析中...</p>
                   </div>
                 )}
                 {error && (
                   <div className="p-6 bg-red-50 text-red-800 rounded-2xl border border-red-100 flex items-start gap-4">
                     <AlertCircle size={24} className="shrink-0 text-red-500" />
-                    <div>
-                      <h4 className="font-bold mb-1">解析エラー</h4>
-                      <p className="text-sm opacity-90 leading-relaxed">{error}</p>
-                    </div>
+                    <div><h4 className="font-bold mb-1">エラー</h4><p className="text-sm">{error}</p></div>
                   </div>
                 )}
                 {analysis && (
-                  <div className="bg-white rounded-[2rem] shadow-xl shadow-slate-200/50 border border-slate-200 overflow-hidden">
+                  <div className="bg-white rounded-[2rem] shadow-xl border border-slate-200 overflow-hidden">
                     <div className="p-8 border-b border-slate-100 bg-slate-50/50 flex flex-col md:flex-row justify-between items-center gap-4">
                       <div>
                         <h2 className="text-2xl font-black text-slate-800">{analysis.title}</h2>
-                        <p className="text-slate-500 text-sm mt-1 font-medium">XMLデータから抽出された一覧</p>
+                        <p className="text-slate-500 text-sm mt-1">抽出された被保険者一覧</p>
                       </div>
                       <div className="flex gap-3 print:hidden">
-                        <button onClick={downloadCSV} className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-bold hover:bg-slate-50 shadow-sm transition-all active:scale-95"><Download size={18} />CSVダウンロード</button>
-                        <button onClick={() => window.print()} className="flex items-center gap-2 px-5 py-2.5 bg-slate-800 text-white rounded-xl text-sm font-bold hover:bg-slate-900 shadow-md transition-all active:scale-95"><Printer size={18} />印刷 / PDF保存</button>
+                        <button onClick={downloadCSV} className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-bold hover:bg-slate-50 transition-all active:scale-95"><Download size={18} />CSVダウンロード</button>
+                        <button onClick={() => window.print()} className="flex items-center gap-2 px-5 py-2.5 bg-slate-800 text-white rounded-xl text-sm font-bold hover:bg-slate-900 transition-all active:scale-95"><Printer size={18} />印刷 / PDF</button>
                       </div>
                     </div>
                     <div className="overflow-x-auto">
@@ -283,13 +262,11 @@ const App: React.FC = () => {
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                           {calculatedRows.map((calc, ri) => (
-                            <tr key={ri} className="hover:bg-blue-50/20 transition-colors group">
+                            <tr key={ri} className="hover:bg-blue-50/10 transition-colors">
                               {calc.original.map((cell, ci) => (
-                                <td key={ci} className="p-4 text-[14px] text-slate-700 whitespace-nowrap font-medium">{cell}</td>
+                                <td key={ci} className="p-4 text-[14px] text-slate-700 whitespace-nowrap">{cell}</td>
                               ))}
-                              <td className="p-4 text-[14px] font-bold text-right bg-blue-50/20 text-blue-700 whitespace-nowrap">
-                                ¥{calc.totalPremium.toLocaleString()}
-                              </td>
+                              <td className="p-4 text-[14px] font-bold text-right bg-blue-50/10 text-blue-700">¥{calc.totalPremium.toLocaleString()}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -297,29 +274,15 @@ const App: React.FC = () => {
                     </div>
                   </div>
                 )}
-                {!isLoading && !analysis && !error && (
-                  <div className="py-24 text-center bg-white rounded-[2rem] border-2 border-dashed border-slate-100">
-                    <span className="flex items-center justify-center w-24 h-24 rounded-full bg-slate-50 mx-auto mb-6 text-slate-200"><Info size={48} /></span>
-                    <p className="text-slate-400 font-bold text-lg">解析データを準備しています...</p>
-                    <p className="text-slate-300 text-sm mt-2">画面上の「XML構造」タブから生のデータを確認することもできます。</p>
-                  </div>
-                )}
               </>
             ) : (
               <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-xl overflow-auto max-h-[75vh]">
-                <div className="mb-6 pb-4 border-b border-slate-100 flex items-center justify-between">
-                  <h3 className="font-bold text-slate-400 text-sm uppercase tracking-widest">XML階層ツリー</h3>
-                  <span className="text-[10px] bg-slate-100 px-2 py-1 rounded text-slate-400 font-bold uppercase tracking-tighter">Read Only Mode</span>
-                </div>
-                <XMLTreeView node={parsedNode!} />
+                {parsedNode && <XMLTreeView node={parsedNode} />}
               </div>
             )}
           </div>
         )}
       </main>
-      <footer className="p-6 text-center text-[10px] text-slate-300 font-bold tracking-widest uppercase print:hidden">
-        Secure & Private XML Assistant © 2025
-      </footer>
     </div>
   );
 };
