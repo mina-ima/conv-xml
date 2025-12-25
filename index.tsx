@@ -74,6 +74,20 @@ const robustParseInt = (val: any): number => {
     return parseInt(str, 10);
 };
 
+/**
+ * 元号と年から西暦年を算出する
+ */
+const convertToGregorianYear = (gengo: string, year: number): number => {
+    if (year > 1900) return year; // すでに西暦の場合
+    const g = gengo.trim();
+    if (g === "1" || g === "明治") return 1867 + year;
+    if (g === "3" || g === "大正") return 1911 + year;
+    if (g === "5" || g === "昭和") return 1925 + year;
+    if (g === "7" || g === "平成") return 1988 + year;
+    if (g === "9" || g === "令和") return 2018 + year;
+    return NaN;
+};
+
 const parseAmountValue = (str: string): number => {
     if (!str) return 0;
     const num = robustParseInt(str);
@@ -91,42 +105,33 @@ const calculateInsurance = (row: any, rates: typeof state.rates) => {
     const healthEmp = Math.floor((hSalary * (rates.health / 100)) / 2);
     const pensionEmp = Math.floor((pSalary * (rates.pension / 100)) / 2);
     
-    // --- 年齢計算ロジック ---
+    // --- 年齢計算 ---
     let age = -1;
     let isNursingSubject = false;
-    const gengoRaw = row["生年月日_元号"];
-    const yVal = robustParseInt(row["生年月日_年"]);
-    const mVal = robustParseInt(row["生年月日_月"]) || 1;
-    const dVal = robustParseInt(row["生年月日_日"]) || 1;
+    
+    const birthYear = convertToGregorianYear(row["生年月日_元号"] || "", robustParseInt(row["生年月日_年"]));
+    const birthMonth = robustParseInt(row["生年月日_月"]);
+    const birthDay = robustParseInt(row["生年月日_日"]);
 
-    if (gengoRaw && !isNaN(yVal)) {
-        let birthYear = 0;
-        const g = String(gengoRaw).trim();
-        
-        // 元号コード (1:明治, 3:大正, 5:昭和, 7:平成, 9:令和) または 漢字に対応
-        if (g === "1" || g === "明治") birthYear = 1867 + yVal;
-        else if (g === "3" || g === "大正") birthYear = 1911 + yVal;
-        else if (g === "5" || g === "昭和") birthYear = 1925 + yVal;
-        else if (g === "7" || g === "平成") birthYear = 1988 + yVal;
-        else if (g === "9" || g === "令和") birthYear = 2018 + yVal;
-        else if (yVal > 1900) birthYear = yVal; // すでに西暦の場合
+    if (!isNaN(birthYear) && !isNaN(birthMonth) && !isNaN(birthDay)) {
+        const today = new Date();
+        const tYear = today.getFullYear();
+        const tMonth = today.getMonth() + 1;
+        const tDay = today.getDate();
 
-        if (birthYear > 0) {
-            const today = new Date();
-            age = today.getFullYear() - birthYear;
-            // 誕生日前なら1歳減らす
-            if (today.getMonth() + 1 < mVal || (today.getMonth() + 1 === mVal && today.getDate() < dVal)) {
-                age--;
-            }
-            // 介護保険料対象者（第2号被保険者）：40歳以上65歳未満
-            isNursingSubject = (age >= 40 && age < 65);
+        age = tYear - birthYear;
+        // 誕生日前なら1歳引く
+        if (tMonth < birthMonth || (tMonth === birthMonth && tDay < birthDay)) {
+            age--;
         }
+        // 介護保険：40歳以上65歳未満 (第2号被保険者)
+        isNursingSubject = (age >= 40 && age < 65);
     }
 
     const nursingEmp = isNursingSubject ? Math.floor((hSalary * (rates.nursing / 100)) / 2) : 0;
     const totalEmp = healthEmp + pensionEmp + nursingEmp;
 
-    return { hSalary, pSalary, healthEmp, pensionEmp, nursingEmp, totalEmp, isNursingSubject, age };
+    return { hSalary, pSalary, healthEmp, pensionEmp, nursingEmp, totalEmp, isNursingSubject, age, birthYear, birthMonth, birthDay };
 };
 
 const exportToCSV = (data: UniversalData) => {
@@ -137,13 +142,14 @@ const exportToCSV = (data: UniversalData) => {
     }
     const rows = section.data;
     let csv = "\uFEFF"; // UTF-8 BOM
-    csv += "整理番号,被保険者氏名,年齢,判定,標準額(健保),標準額(厚年),健保料(従業員),厚年料(従業員),介護料(従業員),合計(従業員)\n";
+    csv += "整理番号,被保険者氏名,生年月日(西暦),年齢,判定,標準額(健保),標準額(厚年),健保料(従業員),厚年料(従業員),介護料(従業員),合計(従業員)\n";
     
     rows.forEach(row => {
         const res = calculateInsurance(row, state.rates);
         csv += [
             row["被保険者整理番号"] || "",
             row["被保険者氏名"] || "",
+            `${res.birthYear}/${res.birthMonth}/${res.birthDay}`,
             res.age >= 0 ? res.age : "-",
             res.isNursingSubject ? "介護対象" : `対象外`,
             res.hSalary,
@@ -205,12 +211,16 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
     let paragraphs: string[] = [];
     let title = "";
 
-    const isStandardNotice = node.name === "N7130001";
-    const isBonusNotice = node.name === "N7150001" || (!isStandardNotice && node.children.some(c => c.name === "_被保険者"));
+    // 判定条件の緩和: N7...で始まるか、子要素に_被保険者があるか
+    const isPensionNotice = node.name.startsWith("N7") || node.children.some(c => c.name === "_被保険者");
     const isDocNotice = node.name === "DOC";
 
-    if (isStandardNotice || isBonusNotice) {
-        title = isStandardNotice ? "健康保険・厚生年金保険被保険者標準報酬決定通知書" : "健康保険・厚生年金保険標準賞与額決定通知書";
+    if (isPensionNotice) {
+        // 標準報酬か賞与かの詳細判定
+        const hasBonus = node.children.some(c => c.children.some(gc => gc.name.includes("賞与")));
+        const isStandard = !hasBonus;
+
+        title = isStandard ? "健康保険・厚生年金保険被保険者標準報酬決定通知書" : "健康保険・厚生年金保険標準賞与額決定通知書";
         const rows: any[] = [];
         node.children.forEach(c => {
             if (c.name === "_被保険者") {
@@ -233,7 +243,7 @@ const extractUniversalData = (node: XMLNode): UniversalData => {
             }
         });
         sections.push({ name: "データ", isTable: true, data: rows });
-        return { title, arrivalNumber, postCode, address, companyName, recipientName, creationDate, officeInfo, sections, docNo, paragraphs: [], noticeBox, isStandardNotice, isBonusNotice };
+        return { title, arrivalNumber, postCode, address, companyName, recipientName, creationDate, officeInfo, sections, docNo, paragraphs: [], noticeBox, isStandardNotice: isStandard, isBonusNotice: hasBonus };
     }
 
     if (isDocNotice) {
@@ -262,7 +272,7 @@ const renderDocument = (data: UniversalData) => {
     if (data.isStandardNotice) return renderStandardNotice(data); 
     if (data.isBonusNotice) return renderBonusNotice(data); 
     if (data.isDocNotice) return renderDocNotice(data);
-    return `<div class="p-10 bg-white">未対応の形式です。</div>`;
+    return `<div class="p-10 bg-white rounded-xl shadow-sm text-center"><p class="text-slate-500 font-bold mb-4">未対応の形式、またはデータの解析に失敗しました。</p><p class="text-xs text-slate-400">XMLの構造が標準的な通知書と異なる可能性があります。</p></div>`;
 };
 
 const renderDocNotice = (data: UniversalData) => {
@@ -282,13 +292,27 @@ const renderStandardNotice = (data: UniversalData) => {
         <div class="bg-white shadow-2xl w-full max-w-[1000px] min-h-[1200px] p-12 text-slate-900 rounded-sm mb-20 font-['Noto_Sans_JP']">
             <div class="flex justify-between mb-8 text-xs font-bold">
                 <div class="space-y-1"><p>${data.postCode || ''}</p><p>${data.address || ''}</p><p class="text-base mt-2">${data.companyName || ''}</p><p class="text-base">${data.recipientName || ''} 様</p></div>
-                <div class="text-right"><p>到達番号 ${data.arrivalNumber || ''}</p><div class="border border-slate-900 p-3 mt-2 w-64 h-48 text-left whitespace-pre-wrap overflow-hidden">${data.noticeBox || ''}</div></div>
+                <div class="text-right"><p>到達番号 ${data.arrivalNumber || ''}</p><div class="border border-slate-900 p-3 mt-2 w-64 h-48 text-left whitespace-pre-wrap overflow-hidden font-normal text-[9px]">${data.noticeBox || ''}</div></div>
             </div>
             <div class="text-center mb-8"><h1 class="text-lg font-bold tracking-widest">${data.title}</h1></div>
             <div class="mb-4 text-sm font-bold flex gap-8"><div>事業所整理記号: ${data.officeInfo["事業所整理記号"] || ''}</div><div>事業所番号: ${data.officeInfo["事業所番号"] || ''}</div></div>
-            <table class="w-full border-collapse border border-slate-900 text-[10px] text-center">
-                <thead><tr class="bg-slate-50"><th class="border border-slate-900 p-1">整理番号</th><th class="border border-slate-900 p-1">氏名</th><th class="border border-slate-900 p-1">適用年月</th><th class="border border-slate-900 p-1" colspan="2">標準報酬月額</th><th class="border border-slate-900 p-1">生年月日</th><th class="border border-slate-900 p-1">種別</th></tr></thead>
-                <tbody>${rows.map(row => `<tr><td class="border border-slate-900 p-2">${row["被保険者整理番号"] || ''}</td><td class="border border-slate-900 p-2 text-left pl-4 font-bold text-xs">${row["被保険者氏名"] || ''}</td><td class="border border-slate-900 p-2">${row["適用年月_元号"] || ''}${row["適用年月_年"] || ''}.${row["適用年月_月"] || ''}</td><td class="border border-slate-900 p-2 text-right pr-4">${row["決定後の標準報酬月額_健保"] || ''}</td><td class="border border-slate-900 p-2 text-right pr-4">${row["決定後の標準報酬月額_厚年"] || ''}</td><td class="border border-slate-900 p-2">${row["生年月日_元号"] || ''}${row["生年月日_年"] || ''}.${row["生年月日_月"] || ''}.${row["生年月日_日"] || ''}</td><td class="border border-slate-900 p-2">${row["種別"] || ''}</td></tr>`).join('')}</tbody>
+            <table class="w-full border-collapse border border-slate-900 text-[9px] text-center">
+                <thead><tr class="bg-slate-50"><th class="border border-slate-900 p-1">整理番号</th><th class="border border-slate-900 p-1">氏名</th><th class="border border-slate-900 p-1">適用年月</th><th class="border border-slate-900 p-1" colspan="2">標準報酬月額</th><th class="border border-slate-900 p-1">生年月日 (西暦)</th><th class="border border-slate-900 p-1">種別</th></tr></thead>
+                <tbody>${rows.map(row => {
+                    const res = calculateInsurance(row, state.rates);
+                    return `<tr>
+                        <td class="border border-slate-900 p-2">${row["被保険者整理番号"] || ''}</td>
+                        <td class="border border-slate-900 p-2 text-left pl-4 font-bold text-xs">${row["被保険者氏名"] || ''}</td>
+                        <td class="border border-slate-900 p-2 font-mono">${row["適用年月_元号"] || ''}${row["適用年月_年"] || ''}.${row["適用年月_月"] || ''}</td>
+                        <td class="border border-slate-900 p-2 text-right pr-4 font-mono">${row["決定後の標準報酬月額_健保"] || ''}</td>
+                        <td class="border border-slate-900 p-2 text-right pr-4 font-mono">${row["決定後の標準報酬月額_厚年"] || ''}</td>
+                        <td class="border border-slate-900 p-2">
+                            ${row["生年月日_元号"] || ''}${row["生年月日_年"] || ''}.${row["生年月日_月"] || ''}.${row["生年月日_日"] || ''}
+                            <div class="text-[8px] text-slate-400 font-mono">(${res.birthYear}.${res.birthMonth}.${res.birthDay})</div>
+                        </td>
+                        <td class="border border-slate-900 p-2">${row["種別"] || ''}</td>
+                    </tr>`;
+                }).join('')}</tbody>
             </table>
             <div class="text-right mt-16 font-bold"><p>${data.creationDate || ''}</p><p class="text-lg mt-2">日本年金機構理事長</p></div>
         </div>
@@ -301,12 +325,26 @@ const renderBonusNotice = (data: UniversalData) => {
         <div class="bg-white shadow-2xl w-full max-w-[1000px] min-h-[1200px] p-12 text-slate-900 rounded-sm mb-20 font-['Noto_Sans_JP']">
             <div class="flex justify-between mb-8 text-xs font-bold">
                 <div class="space-y-1"><p>${data.postCode || ''}</p><p>${data.address || ''}</p><p class="text-base mt-2">${data.companyName || ''}</p><p class="text-base">${data.recipientName || ''} 様</p></div>
-                <div class="text-right"><p>到達番号 ${data.arrivalNumber || ''}</p><div class="border border-slate-900 p-3 mt-2 w-64 h-48 text-left whitespace-pre-wrap overflow-hidden">${data.noticeBox || ''}</div></div>
+                <div class="text-right"><p>到達番号 ${data.arrivalNumber || ''}</p><div class="border border-slate-900 p-3 mt-2 w-64 h-48 text-left whitespace-pre-wrap overflow-hidden font-normal text-[9px]">${data.noticeBox || ''}</div></div>
             </div>
             <div class="text-center mb-8"><h1 class="text-lg font-bold tracking-widest">${data.title}</h1></div>
-            <table class="w-full border-collapse border border-slate-900 text-[10px] text-center">
-                <thead><tr class="bg-slate-50"><th class="border border-slate-900 p-1">整理番号</th><th class="border border-slate-900 p-1">氏名</th><th class="border border-slate-900 p-1">支払年月日</th><th class="border border-slate-900 p-1" colspan="2">標準賞与額</th><th class="border border-slate-900 p-1">生年月日</th><th class="border border-slate-900 p-1">種別</th></tr></thead>
-                <tbody>${rows.map(row => `<tr><td class="border border-slate-900 p-2">${row["被保険者整理番号"] || ''}</td><td class="border border-slate-900 p-2 text-left pl-4 font-bold text-xs">${row["被保険者氏名"] || ''}</td><td class="border border-slate-900 p-2">${row["賞与支払年月日_元号"] || ''}${row["賞与支払年月日_年"] || ''}.${row["賞与支払年月日_月"] || ''}.${row["賞与支払年月日_日"] || ''}</td><td class="border border-slate-900 p-2 text-right pr-4">${row["決定後の標準賞与額_健保"] || ''}</td><td class="border border-slate-900 p-2 text-right pr-4">${row["決定後の標準賞与額_厚年"] || ''}</td><td class="border border-slate-900 p-2">${row["生年月日_元号"] || ''}${row["生年月日_年"] || ''}.${row["生年月日_月"] || ''}.${row["生年月日_日"] || ''}</td><td class="border border-slate-900 p-2">${row["種別"] || ''}</td></tr>`).join('')}</tbody>
+            <table class="w-full border-collapse border border-slate-900 text-[9px] text-center">
+                <thead><tr class="bg-slate-50"><th class="border border-slate-900 p-1">整理番号</th><th class="border border-slate-900 p-1">氏名</th><th class="border border-slate-900 p-1">支払年月日</th><th class="border border-slate-900 p-1" colspan="2">標準賞与額</th><th class="border border-slate-900 p-1">生年月日 (西暦)</th><th class="border border-slate-900 p-1">種別</th></tr></thead>
+                <tbody>${rows.map(row => {
+                    const res = calculateInsurance(row, state.rates);
+                    return `<tr>
+                        <td class="border border-slate-900 p-2">${row["被保険者整理番号"] || ''}</td>
+                        <td class="border border-slate-900 p-2 text-left pl-4 font-bold text-xs">${row["被保険者氏名"] || ''}</td>
+                        <td class="border border-slate-900 p-2 font-mono">${row["賞与支払年月日_元号"] || ''}${row["賞与支払年月日_年"] || ''}.${row["賞与支払年月日_月"] || ''}.${row["賞与支払年月日_日"] || ''}</td>
+                        <td class="border border-slate-900 p-2 text-right pr-4 font-mono">${row["決定後の標準賞与額_健保"] || ''}</td>
+                        <td class="border border-slate-900 p-2 text-right pr-4 font-mono">${row["決定後の標準賞与額_厚年"] || ''}</td>
+                        <td class="border border-slate-900 p-2">
+                            ${row["生年月日_元号"] || ''}${row["生年月日_年"] || ''}.${row["生年月日_月"] || ''}.${row["生年月日_日"] || ''}
+                            <div class="text-[8px] text-slate-400 font-mono">(${res.birthYear}.${res.birthMonth}.${res.birthDay})</div>
+                        </td>
+                        <td class="border border-slate-900 p-2">${row["種別"] || ''}</td>
+                    </tr>`;
+                }).join('')}</tbody>
             </table>
             <div class="text-right mt-16 font-bold"><p>${data.creationDate || ''}</p><p class="text-lg mt-2">日本年金機構理事長</p></div>
         </div>
@@ -319,18 +357,21 @@ const renderCalculationOverlay = (data: UniversalData) => {
         <div class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
             <div class="bg-white rounded-[2.5rem] w-full max-w-7xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
                 <div class="p-8 border-b flex justify-between items-center bg-slate-50">
-                    <div><h2 class="text-2xl font-black">保険料シミュレーション</h2><p class="text-xs text-slate-500 font-bold mt-1">健保 ${state.rates.health}% / 厚年 ${state.rates.pension}% / 介護 ${state.rates.nursing}%</p></div>
+                    <div><h2 class="text-2xl font-black">保険料シミュレーション (個人負担分)</h2><p class="text-xs text-slate-500 font-bold mt-1">健保 ${state.rates.health}% / 厚年 ${state.rates.pension}% / 介護 ${state.rates.nursing}%</p></div>
                     <button id="closeCalcBtn" class="w-10 h-10 bg-slate-200 rounded-full flex items-center justify-center cursor-pointer hover:bg-slate-300"><i data-lucide="x"></i></button>
                 </div>
                 <div class="flex-1 overflow-y-auto p-8">
                     <table class="w-full border-collapse">
-                        <thead><tr class="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b"><th class="py-4 text-left">整理番号</th><th class="py-4 text-left">氏名</th><th class="py-4">年齢</th><th class="py-4 text-right">標準額(健保)</th><th class="py-4 text-right">標準額(厚年)</th><th class="py-4 text-right text-blue-600">健康保険料</th><th class="py-4 text-right text-indigo-600">厚生年金料</th><th class="py-4 text-right text-emerald-600">介護保険料</th><th class="py-4 text-right bg-slate-900 text-white rounded-t-xl px-4">合計負担</th></tr></thead>
+                        <thead><tr class="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b"><th class="py-4 text-left">整理番号</th><th class="py-4 text-left">氏名</th><th class="py-4 text-center">年齢</th><th class="py-4 text-right">標準額(健保)</th><th class="py-4 text-right">標準額(厚年)</th><th class="py-4 text-right text-blue-600">健康保険料</th><th class="py-4 text-right text-indigo-600">厚生年金料</th><th class="py-4 text-right text-emerald-600">介護保険料</th><th class="py-4 text-right bg-slate-900 text-white rounded-t-xl px-4">合計負担</th></tr></thead>
                         <tbody class="divide-y text-[13px]">${rows.map(row => { 
                             const res = calculateInsurance(row, state.rates); 
                             return `<tr class="hover:bg-slate-50">
                                 <td class="py-4 font-mono">${row["被保険者整理番号"] || "-"}</td>
                                 <td class="py-4 font-black">${row["被保険者氏名"] || "-"}</td>
-                                <td class="py-4 text-center font-bold">${res.age >= 0 ? `${res.age}歳` : "-"}</td>
+                                <td class="py-4 text-center font-bold">
+                                    ${res.age >= 0 ? `${res.age}歳` : "-"}
+                                    ${res.isNursingSubject ? '<div class="text-[8px] text-emerald-500 uppercase">対象</div>' : ''}
+                                </td>
                                 <td class="py-4 text-right font-mono">${res.hSalary.toLocaleString()}円</td>
                                 <td class="py-4 text-right font-mono">${res.pSalary.toLocaleString()}円</td>
                                 <td class="py-4 text-right font-mono font-bold text-blue-600">${res.healthEmp.toLocaleString()}円</td>
@@ -360,7 +401,7 @@ const handleUpload = async (e: Event) => {
     const rawFiles = Array.from(input.files || []);
     if (rawFiles.length === 0) return;
     state.isLoading = true;
-    state.loadingMsg = "読み込み中...";
+    state.loadingMsg = "解析中...";
     render();
     const caseMap = new Map<string, AppFile[]>();
     try {
@@ -370,7 +411,7 @@ const handleUpload = async (e: Event) => {
                 try {
                     const parsed = parseXML(content);
                     const analysis = extractUniversalData(parsed);
-                    const dirName = path.split('/')[0] || "読み込みファイル";
+                    const dirName = path.split('/')[0] || "読み取りファイル";
                     if (!caseMap.has(dirName)) caseMap.set(dirName, []);
                     caseMap.get(dirName)!.push({ name, fullPath: path, content, parsed, analysis });
                 } catch (err) { console.error(`解析失敗: ${name}`, err); }
@@ -398,9 +439,10 @@ const render = () => {
     if (!root) return;
     if (state.isLoading) { root.innerHTML = `<div class="h-screen flex items-center justify-center bg-slate-900 text-white font-black text-2xl animate-pulse">${state.loadingMsg}</div>`; return; }
     if (state.cases.length === 0) {
-        root.innerHTML = `<div class="h-screen flex flex-col items-center justify-center bg-slate-50"><div class="bg-white p-20 rounded-[4rem] shadow-2xl border text-center max-w-2xl w-full"><h1 class="text-4xl font-black mb-6 tracking-tighter">e-Gov XML Pro</h1><p class="text-slate-500 mb-12">通知書XML（ZIP可）をアップロードしてください</p><div class="grid grid-cols-2 gap-6"><label class="p-8 bg-blue-600 text-white rounded-[2rem] font-black cursor-pointer shadow-lg hover:bg-blue-700">フォルダを選択<input type="file" id="folderInput" class="hidden" webkitdirectory directory /></label><label class="p-8 bg-slate-900 text-white rounded-[2rem] font-black cursor-pointer shadow-lg hover:bg-black">ZIPを選択<input type="file" id="zipInput" class="hidden" accept=".zip" /></label></div></div></div>`;
+        root.innerHTML = `<div class="h-screen flex flex-col items-center justify-center bg-slate-50"><div class="bg-white p-20 rounded-[4rem] shadow-2xl border text-center max-w-2xl w-full"><div class="w-20 h-20 bg-blue-600 rounded-3xl flex items-center justify-center mx-auto mb-10 text-white shadow-xl rotate-3"><i data-lucide="upload-cloud" size="40"></i></div><h1 class="text-4xl font-black mb-6 tracking-tighter">e-Gov XML Pro Explorer</h1><p class="text-slate-500 mb-12">通知書XML（ZIP可）をアップロードしてください</p><div class="grid grid-cols-2 gap-6"><label class="p-8 bg-blue-600 text-white rounded-[2rem] font-black cursor-pointer shadow-lg hover:bg-blue-700">フォルダを選択<input type="file" id="folderInput" class="hidden" webkitdirectory directory /></label><label class="p-8 bg-slate-900 text-white rounded-[2rem] font-black cursor-pointer shadow-lg hover:bg-black">ZIPを選択<input type="file" id="zipInput" class="hidden" accept=".zip" /></label></div></div></div>`;
         document.getElementById('folderInput')?.addEventListener('change', handleUpload);
         document.getElementById('zipInput')?.addEventListener('change', handleUpload);
+        if ((window as any).lucide) (window as any).lucide.createIcons();
         return;
     }
     const currentFile = state.cases[state.selectedCaseIdx]?.files[state.selectedFileIdx];
@@ -413,11 +455,11 @@ const render = () => {
                 <aside class="w-80 bg-white border-r flex flex-col overflow-hidden"><div class="p-5 border-b bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">Case Files</div><div class="flex-1 overflow-y-auto p-3 space-y-2">${state.cases.map((c, cIdx) => `<div><button class="w-full flex items-center gap-2 p-3 font-bold text-slate-700 text-sm hover:bg-slate-50 rounded-lg toggle-case-btn cursor-pointer" data-index="${cIdx}"><i data-lucide="${c.isOpen ? 'chevron-down' : 'chevron-right'}" size="14"></i><span class="truncate">${c.folderName}</span></button>${c.isOpen ? c.files.map((f, fIdx) => `<button class="w-full text-left ml-5 p-3 text-xs font-bold rounded-lg mt-1 select-file-btn cursor-pointer ${cIdx === state.selectedCaseIdx && fIdx === state.selectedFileIdx ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:bg-blue-50'}" data-case="${cIdx}" data-file="${fIdx}">${f.name}</button>`).join('') : ''}</div>`).join('')}</div></aside>
                 <main class="flex-1 bg-slate-200 overflow-y-auto p-4 md:p-10 flex flex-col items-center relative">
                     <div class="mb-6 flex bg-white p-1.5 rounded-2xl shadow-lg sticky top-0 z-10 no-print"><button id="viewSummaryBtn" class="px-8 py-3 rounded-xl text-xs font-black transition-all cursor-pointer ${state.viewMode === 'summary' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-50'}">通知書表示</button><button id="viewTreeBtn" class="px-8 py-3 rounded-xl text-xs font-black transition-all cursor-pointer ${state.viewMode === 'tree' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-50'}">データ構造</button></div>
-                    ${state.viewMode === 'summary' && data && (data.isStandardNotice || data.isBonusNotice) ? `<div class="w-full max-w-[1000px] mb-6 flex justify-between items-center bg-blue-50 border border-blue-200 p-4 rounded-2xl shadow-sm no-print"><div class="flex items-center gap-3 text-blue-900"><div class="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center text-white"><i data-lucide="zap"></i></div><div><p class="text-xs font-black">業務支援メニュー</p><p class="text-[10px] opacity-70">データの書き出しや計算が可能です</p></div></div><div class="flex gap-2"><button id="printBtn" class="bg-white border border-blue-200 text-blue-600 px-4 py-2 rounded-xl text-[11px] font-black hover:bg-blue-100 flex items-center gap-2 cursor-pointer"><i data-lucide="printer" size="14"></i>PDF印刷</button><button id="mainToCsvBtn" class="bg-white border border-blue-200 text-blue-600 px-4 py-2 rounded-xl text-[11px] font-black hover:bg-blue-100 flex items-center gap-2 cursor-pointer"><i data-lucide="file-down" size="14"></i>CSV出力</button><button id="calcMenuBtn" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-[11px] font-black hover:bg-blue-700 shadow-md cursor-pointer">保険料シミュレーション</button></div></div>` : ''}
-                    <div class="print-container">${state.viewMode === 'summary' && data ? renderDocument(data) : (currentFile ? `<div class="bg-slate-900 p-10 rounded-3xl w-full max-w-4xl text-xs text-blue-100 overflow-auto font-mono">データ構造（読み取り専用）</div>` : '')}</div>
+                    ${state.viewMode === 'summary' && data && (data.isStandardNotice || data.isBonusNotice) ? `<div class="w-full max-w-[1000px] mb-6 flex justify-between items-center bg-blue-50 border border-blue-200 p-4 rounded-2xl shadow-sm no-print"><div class="flex items-center gap-3 text-blue-900"><div class="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center text-white"><i data-lucide="zap"></i></div><div><p class="text-xs font-black">業務支援メニュー</p><p class="text-[10px] opacity-70">CSV書き出し・計算シミュレーション</p></div></div><div class="flex gap-2"><button id="printBtn" class="bg-white border border-blue-200 text-blue-600 px-4 py-2 rounded-xl text-[11px] font-black hover:bg-blue-100 flex items-center gap-2 cursor-pointer"><i data-lucide="printer" size="14"></i>PDF印刷</button><button id="mainToCsvBtn" class="bg-white border border-blue-200 text-blue-600 px-4 py-2 rounded-xl text-[11px] font-black hover:bg-blue-100 flex items-center gap-2 cursor-pointer"><i data-lucide="file-down" size="14"></i>CSV出力</button><button id="calcMenuBtn" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-[11px] font-black hover:bg-blue-700 shadow-md cursor-pointer">保険料計算</button></div></div>` : ''}
+                    <div class="print-container">${state.viewMode === 'summary' && data ? renderDocument(data) : (currentFile ? `<div class="bg-slate-900 p-10 rounded-3xl w-full max-w-4xl text-xs text-blue-100 overflow-auto font-mono">データ構造を表示中... (Tree Viewは未実装)</div>` : '')}</div>
                 </main>
             </div>
-            ${state.showSettings ? `<div class="fixed inset-0 bg-black/80 backdrop-blur-md z-[300] flex items-center justify-center p-5"><div class="bg-white p-12 rounded-[3rem] max-w-md w-full"><h2 class="text-3xl font-black mb-4">保険料率設定</h2><div class="space-y-6">${Object.entries(state.rates).map(([k, v]) => `<div><label class="block text-[10px] font-black text-slate-400 mb-2 uppercase">${k} (%)</label><input type="number" step="0.001" value="${v}" data-key="${k}" class="rate-input w-full p-4 bg-slate-100 rounded-2xl font-black text-2xl" /></div>`).join('')}</div><button id="closeSettings" class="w-full mt-10 py-5 bg-blue-600 text-white font-black rounded-2xl shadow-xl hover:scale-105 transition-all cursor-pointer">保存して適用</button></div></div>` : ''}
+            ${state.showSettings ? `<div class="fixed inset-0 bg-black/80 backdrop-blur-md z-[300] flex items-center justify-center p-5"><div class="bg-white p-12 rounded-[3rem] max-w-md w-full"><h2 class="text-3xl font-black mb-4">料率設定</h2><div class="space-y-6">${Object.entries(state.rates).map(([k, v]) => `<div><label class="block text-[10px] font-black text-slate-400 mb-2 uppercase">${k} (%)</label><input type="number" step="0.001" value="${v}" data-key="${k}" class="rate-input w-full p-4 bg-slate-100 rounded-2xl font-black text-2xl" /></div>`).join('')}</div><button id="closeSettings" class="w-full mt-10 py-5 bg-blue-600 text-white font-black rounded-2xl shadow-xl hover:scale-105 transition-all cursor-pointer">保存して適用</button></div></div>` : ''}
             ${state.showCalcResults && data ? renderCalculationOverlay(data) : ''}
         </div>
     `;
