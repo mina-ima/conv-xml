@@ -11,6 +11,7 @@ interface XMLNode {
 
 interface AnalysisResult {
     title: string;
+    commonInfo: Record<string, string>;
     tableData?: {
         headers: string[];
         rows: string[][];
@@ -62,104 +63,92 @@ const parseXML = (xmlString: string): XMLNode => {
 };
 
 /**
- * e-GovのXMLからローカルでデータを抽出する強化版エンジン
+ * e-GovのXMLから共通情報と明細情報を分離して抽出する
  */
 const localExtractData = (node: XMLNode): AnalysisResult => {
+    const commonInfo: Record<string, string> = {};
     let bestRows: any[] = [];
     let bestHeaderSet = new Set<string>();
-    let maxCount = 0;
+    let maxTableScore = 0;
 
-    // XMLツリーを走査して、最も「表らしい」部分を探す
-    const findTableCandidates = (n: XMLNode) => {
-        if (n.children.length > 0) {
-            // 子要素のタグ名の出現回数をカウント
+    // 1. 全てのノードを走査して、全項目の出現頻度を記録
+    const allLeaves: Record<string, string[]> = {};
+    const collectAll = (n: XMLNode) => {
+        if (n.children.length === 0 && n.content) {
+            if (!allLeaves[n.name]) allLeaves[n.name] = [];
+            allLeaves[n.name].push(n.content);
+        }
+        n.children.forEach(collectAll);
+    };
+    collectAll(node);
+
+    // 2. 表（明細）となる部分を特定
+    const findTable = (n: XMLNode) => {
+        if (n.children.length >= 1) {
             const counts: Record<string, number> = {};
-            n.children.forEach(c => {
-                counts[c.name] = (counts[c.name] || 0) + 1;
-            });
+            n.children.forEach(c => { counts[c.name] = (counts[c.name] || 0) + 1; });
 
-            // 2回以上繰り返されているタグがあれば、それをレコードの候補とする
             for (const [tagName, count] of Object.entries(counts)) {
                 if (count >= 1) {
                     const currentRows: any[] = [];
                     const currentHeaderSet = new Set<string>();
+                    const targets = n.children.filter(c => c.name === tagName);
 
-                    // 該当するタグを持つ子要素からデータを抽出
-                    const targetChildren = n.children.filter(c => c.name === tagName);
-                    targetChildren.forEach(record => {
+                    targets.forEach(record => {
                         const rowData: Record<string, string> = {};
-                        const extractFields = (fn: XMLNode, prefix = "") => {
+                        const flatten = (fn: XMLNode, prefix = "") => {
                             if (fn.children.length === 0) {
                                 const key = prefix + fn.name;
                                 rowData[key] = fn.content || "";
                                 currentHeaderSet.add(key);
                             } else {
-                                fn.children.forEach(c => extractFields(c, fn.name + "_"));
+                                fn.children.forEach(c => flatten(c, fn.name + "_"));
                             }
                         };
-                        extractFields(record);
-                        if (Object.keys(rowData).length > 0) {
-                            currentRows.push(rowData);
-                        }
+                        flatten(record);
+                        if (Object.keys(rowData).length > 0) currentRows.push(rowData);
                     });
 
-                    // より多くのレコードを持っている、または情報量が多い方を採用
                     const score = currentRows.length * currentHeaderSet.size;
-                    if (score > maxCount) {
-                        maxCount = score;
+                    if (score > maxTableScore) {
+                        maxTableScore = score;
                         bestRows = currentRows;
                         bestHeaderSet = currentHeaderSet;
                     }
                 }
             }
         }
-        n.children.forEach(findTableCandidates);
+        n.children.forEach(findTable);
     };
+    findTable(node);
 
-    findTableCandidates(node);
+    // 3. 表に含まれない、1回しか出てこない項目を「共通情報」とする
+    for (const [key, values] of Object.entries(allLeaves)) {
+        if (values.length === 1 && !bestHeaderSet.has(key)) {
+            // 長すぎる値やタイトルっぽいものは除外して共通情報へ
+            if (values[0].length < 100) {
+                commonInfo[key] = values[0];
+            }
+        }
+    }
 
-    // ヘッダーと行データの整形
     const headers = Array.from(bestHeaderSet);
     const formattedRows = bestRows.map(r => headers.map(h => r[h] || ""));
 
+    // タイトルの決定
+    let title = "e-Gov 通知書";
+    if (node.name.includes("通知書")) title = node.name;
+    const possibleTitles = ["タイトル", "帳票名", "DocumentTitle"];
+    for(const t of possibleTitles) if(commonInfo[t]) { title = commonInfo[t]; delete commonInfo[t]; }
+
     return {
-        title: node.name === "通知書" ? "e-Gov 通知書データ" : "解析結果",
+        title,
+        commonInfo,
         tableData: {
-            headers: headers.map(h => h.replace(/.*_/, "")), // 表示用に短縮
+            headers: headers.map(h => h.replace(/.*_/, "")),
             rows: formattedRows
         }
     };
-};
-
-// --- Gemini Service ---
-const analyzeWithAI = async (xmlString: string): Promise<AnalysisResult> => {
-    if (!process.env.API_KEY) throw new Error("API Key not configured");
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const contentSnippet = xmlString.substring(0, 200000);
-
-    const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: `Extract social insurance table from e-Gov XML. Output JSON {title, tableData: {headers, rows}}. XML: ${contentSnippet}`,
-        config: { 
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                    title: { type: Type.STRING },
-                    tableData: {
-                        type: Type.OBJECT,
-                        properties: {
-                            headers: { type: Type.ARRAY, items: { type: Type.STRING } },
-                            rows: { type: Type.ARRAY, items: { type: Type.ARRAY, items: { type: Type.STRING } } }
-                        },
-                        required: ["headers", "rows"]
-                    }
-                },
-                required: ["title", "tableData"]
-            }
-        }
-    });
-    return JSON.parse(response.text || "{}");
 };
 
 // --- Calculator ---
@@ -169,13 +158,20 @@ const calculatePremiums = () => {
     
     const findIdx = (keywords: string[]) => headers.findIndex(h => keywords.some(k => h.includes(k)));
     
-    const hIdx = findIdx(["健保", "健康保険", "標準額", "標準報酬"]);
+    const hIdx = findIdx(["健保", "健康保険", "標準額", "標準報酬", "賞与額"]);
     const pIdx = findIdx(["厚年", "厚生年金"]);
     const bIdx = findIdx(["生年月日", "生年"]);
 
     return rows.map(row => {
-        const healthAmount = parseInt(row[hIdx]?.replace(/[^0-9]/g, '') || '0') * (row[hIdx]?.includes('千円') ? 1000 : 1);
-        const pensionAmount = parseInt(row[pIdx]?.replace(/[^0-9]/g, '') || '0') * (row[pIdx]?.includes('千円') ? 1000 : 1);
+        const parseValue = (val: string) => {
+            if (!val) return 0;
+            let num = parseInt(val.replace(/[^0-9]/g, '')) || 0;
+            if (val.includes('千円')) num *= 1000;
+            return num;
+        };
+
+        const healthAmount = parseValue(row[hIdx]);
+        const pensionAmount = parseValue(row[pIdx]);
         
         const birthStr = row[bIdx] || "";
         const isNursing = birthStr.includes("S") || birthStr.includes("19") || (birthStr.includes("H") && parseInt(birthStr.replace(/[^0-9]/g, '')) < 10);
@@ -198,17 +194,25 @@ const render = () => {
 
     if (!state.xmlContent) {
         root.innerHTML = `
-            <div class="min-h-screen flex flex-col items-center justify-center bg-[#f8fafc] p-4">
-                <div class="bg-white p-12 rounded-[2.5rem] shadow-xl border border-slate-100 w-full max-w-xl text-center">
-                    <div class="bg-blue-600 w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-8 text-white shadow-lg">
-                        <i data-lucide="file-up" size="40"></i>
+            <div class="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-4">
+                <div class="bg-white p-12 rounded-[3rem] shadow-2xl border border-slate-200 w-full max-w-2xl text-center transform transition-all">
+                    <div class="bg-gradient-to-br from-blue-600 to-indigo-700 w-24 h-24 rounded-[2rem] flex items-center justify-center mx-auto mb-10 text-white shadow-xl rotate-3">
+                        <i data-lucide="file-digit" size="48"></i>
                     </div>
-                    <h2 class="text-3xl font-extrabold mb-4 text-slate-800">XMLを読み込む</h2>
-                    <p class="text-slate-500 mb-10 leading-relaxed font-medium">e-Govの社会保険通知書などのXMLファイルを選択してください。AIを使わずブラウザ内で即座に解析します。</p>
-                    <label class="block w-full py-5 px-8 bg-blue-600 hover:bg-blue-700 text-white font-bold text-lg rounded-2xl cursor-pointer transition-all shadow-lg active:scale-95">
-                        ファイルを選択
+                    <h2 class="text-4xl font-black mb-6 text-slate-900 tracking-tight">e-Gov XML 閲覧・計算</h2>
+                    <p class="text-slate-500 mb-12 text-lg font-medium leading-relaxed px-4">
+                        ダウンロードした通知書XMLを読み込みます。<br>
+                        共通情報を自動抽出し、保険料の本人負担額を即座に計算します。
+                    </p>
+                    <label class="group relative block w-full py-6 px-10 bg-slate-900 hover:bg-blue-600 text-white font-black text-xl rounded-2xl cursor-pointer transition-all shadow-2xl active:scale-95 overflow-hidden">
+                        <span class="relative z-10 flex items-center justify-center gap-3">
+                            <i data-lucide="upload" size="24"></i>
+                            ファイルを選択する
+                        </span>
+                        <div class="absolute inset-0 bg-gradient-to-r from-blue-600 to-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity"></div>
                         <input type="file" id="fileInput" class="hidden" accept=".xml" />
                     </label>
+                    <p class="mt-8 text-xs text-slate-400 font-bold uppercase tracking-widest">Supports Standard Bonus & Remuneration XML</p>
                 </div>
             </div>
         `;
@@ -216,84 +220,127 @@ const render = () => {
     } else {
         const results = calculatePremiums();
         root.innerHTML = `
-            <div class="min-h-screen flex flex-col bg-[#f8fafc]">
-                <header class="bg-white border-b border-slate-200 px-6 py-4 sticky top-0 z-50">
-                    <div class="max-w-[1600px] mx-auto flex items-center justify-between">
-                        <div class="flex items-center gap-3 cursor-pointer" id="resetBtn">
-                            <div class="bg-blue-600 p-2 rounded text-white shadow-sm"><i data-lucide="file-text" size="20"></i></div>
-                            <h1 class="text-lg font-bold tracking-tight">e-Gov XML Calculator</h1>
+            <div class="min-h-screen flex flex-col bg-[#fdfdfd]">
+                <header class="bg-white/80 backdrop-blur-md border-b border-slate-100 px-8 py-5 sticky top-0 z-50">
+                    <div class="max-w-[1400px] mx-auto flex items-center justify-between">
+                        <div class="flex items-center gap-4 cursor-pointer group" id="resetBtn">
+                            <div class="bg-slate-900 p-2.5 rounded-xl text-white group-hover:bg-blue-600 transition-colors shadow-lg">
+                                <i data-lucide="chevron-left" size="20"></i>
+                            </div>
+                            <div>
+                                <h1 class="text-xl font-black tracking-tighter text-slate-900">e-Gov XML Reader</h1>
+                                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Professional Version</p>
+                            </div>
                         </div>
-                        <div class="flex items-center gap-3">
-                            <button id="toggleSettings" class="px-4 py-2 rounded-xl text-sm font-bold border ${state.showSettings ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-200 shadow-sm'}">
-                                <i data-lucide="settings" size="16" class="inline mr-2"></i>保険料率
+                        <div class="flex items-center gap-4">
+                            <button id="toggleSettings" class="px-5 py-2.5 rounded-xl text-sm font-black border transition-all ${state.showSettings ? 'bg-blue-600 text-white border-blue-600 shadow-blue-200 shadow-lg' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400 shadow-sm'}">
+                                <i data-lucide="percent" size="16" class="inline mr-2"></i>料率設定
                             </button>
-                            <div class="flex gap-1 bg-slate-100 p-1 rounded-xl">
-                                <button id="viewSummary" class="px-5 py-2 rounded-lg text-sm font-bold ${state.viewMode === 'summary' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}">帳票</button>
-                                <button id="viewTree" class="px-5 py-2 rounded-lg text-sm font-bold ${state.viewMode === 'tree' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}">構造</button>
+                            <div class="h-6 w-px bg-slate-200"></div>
+                            <div class="flex gap-1 bg-slate-100 p-1.5 rounded-2xl">
+                                <button id="viewSummary" class="px-6 py-2 rounded-xl text-xs font-black transition-all ${state.viewMode === 'summary' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500 hover:text-slate-800'}">ドキュメント</button>
+                                <button id="viewTree" class="px-6 py-2 rounded-xl text-xs font-black transition-all ${state.viewMode === 'tree' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500 hover:text-slate-800'}">Rawデータ</button>
                             </div>
                         </div>
                     </div>
                 </header>
 
-                <main class="flex-1 max-w-[1600px] w-full mx-auto p-6">
+                <main class="flex-1 max-w-[1400px] w-full mx-auto p-10">
                     ${state.showSettings ? `
-                        <div class="mb-8 p-8 bg-white rounded-3xl border border-blue-100 shadow-xl animate-in slide-in-from-top-4 duration-300">
-                            <h3 class="text-sm font-black text-slate-800 mb-6 uppercase tracking-widest">保険料率設定（本人負担分）</h3>
-                            <div class="grid grid-cols-1 sm:grid-cols-3 gap-8">
+                        <div class="mb-12 p-10 bg-white rounded-[2rem] border-2 border-blue-50 shadow-2xl animate-in zoom-in-95 duration-300">
+                            <div class="flex items-center gap-3 mb-8">
+                                <div class="w-2 h-8 bg-blue-600 rounded-full"></div>
+                                <h3 class="text-xl font-black text-slate-900">健康保険・厚生年金保険料率（本人負担分）</h3>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-10">
                                 ${Object.entries(state.rates).map(([key, val]) => `
-                                    <div>
-                                        <label class="block text-xs font-bold text-slate-400 uppercase mb-2">
-                                            ${key === 'health' ? '健康保険 (%)' : key === 'pension' ? '厚生年金 (%)' : '介護保険 (%)'}
+                                    <div class="space-y-3">
+                                        <label class="block text-xs font-black text-slate-400 uppercase tracking-widest ml-1">
+                                            ${key === 'health' ? '健康保険料率 (%)' : key === 'pension' ? '厚生年金保険料率 (%)' : '介護保険料率 (%)'}
                                         </label>
-                                        <input type="number" step="0.001" value="${val}" data-key="${key}" class="rate-input w-full p-4 bg-slate-50 border border-slate-200 rounded-xl font-mono font-bold text-blue-600 focus:ring-2 focus:ring-blue-500 outline-none transition-all" />
+                                        <div class="relative">
+                                            <input type="number" step="0.001" value="${val}" data-key="${key}" class="rate-input w-full p-5 bg-slate-50 border-2 border-transparent focus:border-blue-500 focus:bg-white rounded-2xl font-mono text-2xl font-black text-slate-900 outline-none transition-all" />
+                                            <span class="absolute right-5 top-1/2 -translate-y-1/2 text-slate-300 font-black text-xl">%</span>
+                                        </div>
                                     </div>
                                 `).join('')}
                             </div>
-                            <p class="mt-4 text-[10px] text-slate-400">※各料率を1/2した額（折半額）で計算されます。</p>
+                            <div class="mt-8 flex items-center gap-2 text-slate-400 bg-slate-50 p-4 rounded-xl">
+                                <i data-lucide="info" size="16"></i>
+                                <p class="text-[11px] font-bold">※事業主と被保険者が折半で負担する場合の「本人負担分」の料率を入力してください。デフォルトは一般的な折半後の料率目安です。</p>
+                            </div>
                         </div>
                     ` : ''}
 
                     ${state.viewMode === 'summary' ? `
-                        <div class="bg-white rounded-[2.5rem] shadow-xl border border-slate-200 overflow-hidden">
-                            <div class="p-8 border-b bg-slate-50/30 flex justify-between items-center">
-                                <div>
-                                    <h2 class="text-2xl font-black text-slate-800">${state.analysis?.title || '解析結果'}</h2>
-                                    <p class="text-sm text-slate-400 font-medium">ローカルエンジンにより解析済み</p>
-                                </div>
-                                <div class="flex gap-2">
-                                    <button id="downloadCsv" class="px-6 py-3 bg-slate-800 text-white rounded-xl text-sm font-bold hover:bg-slate-900 transition-all shadow-md active:scale-95">
-                                        CSVダウンロード
-                                    </button>
-                                </div>
+                        <div class="bg-white rounded-[3rem] shadow-2xl border border-slate-100 overflow-hidden">
+                            <!-- Title Area -->
+                            <div class="p-12 text-center border-b border-slate-50">
+                                <h2 class="text-3xl font-black text-slate-900 mb-2">${state.analysis?.title || '通知書'}</h2>
+                                <div class="w-24 h-1.5 bg-blue-600 mx-auto rounded-full"></div>
                             </div>
-                            <div class="overflow-x-auto">
+
+                            <!-- Common Info Cards -->
+                            <div class="p-10 bg-slate-50/50 border-b border-slate-100 grid grid-cols-2 md:grid-cols-4 gap-6">
+                                ${Object.entries(state.analysis?.commonInfo || {}).map(([key, val]) => `
+                                    <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+                                        <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">${key}</p>
+                                        <p class="text-base font-bold text-slate-800">${val}</p>
+                                    </div>
+                                `).join('')}
+                                ${Object.keys(state.analysis?.commonInfo || {}).length === 0 ? '<p class="col-span-full text-center text-slate-400 text-sm font-bold italic">共通情報は検出されませんでした。</p>' : ''}
+                            </div>
+
+                            <!-- Table Area -->
+                            <div class="overflow-x-auto p-2">
                                 <table class="w-full text-left whitespace-nowrap">
-                                    <thead class="bg-slate-50">
-                                        <tr>
+                                    <thead>
+                                        <tr class="bg-slate-900 text-white">
                                             ${state.analysis?.tableData?.headers.map(h => `
-                                                <th class="p-5 text-[10px] font-black text-slate-400 uppercase border-b tracking-tighter">${h}</th>
+                                                <th class="p-6 text-[11px] font-black uppercase tracking-widest">${h}</th>
                                             `).join('') || ''}
-                                            <th class="p-5 text-[10px] font-black text-blue-600 uppercase border-b text-right tracking-tighter">概算本人負担額</th>
+                                            <th class="p-6 text-[11px] font-black uppercase tracking-widest bg-blue-600 text-right sticky right-0">概算本人負担額</th>
                                         </tr>
                                     </thead>
                                     <tbody class="divide-y divide-slate-100">
                                         ${results.map(r => `
-                                            <tr class="hover:bg-blue-50/20 transition-colors">
-                                                ${r.original.map(cell => `<td class="p-5 text-sm text-slate-600 font-medium">${cell}</td>`).join('')}
-                                                <td class="p-5 text-sm font-black text-right text-blue-700 bg-blue-50/10">¥${r.total.toLocaleString()}</td>
+                                            <tr class="hover:bg-blue-50/10 transition-colors group">
+                                                ${r.original.map(cell => `<td class="p-6 text-sm text-slate-700 font-bold group-hover:text-blue-700 transition-colors">${cell}</td>`).join('')}
+                                                <td class="p-6 text-lg font-black text-right text-blue-700 bg-blue-50/30 sticky right-0 backdrop-blur-sm">
+                                                    <span class="text-xs mr-1 text-blue-400">¥</span>${r.total.toLocaleString()}
+                                                </td>
                                             </tr>
                                         `).join('')}
-                                        ${results.length === 0 ? '<tr><td colspan="100" class="p-20 text-center text-slate-400 font-bold">データが検出されませんでした。ファイルの中身を確認してください。</td></tr>' : ''}
+                                        ${results.length === 0 ? '<tr><td colspan="100" class="p-32 text-center text-slate-400 font-black text-xl italic">明細データが見つかりませんでした。</td></tr>' : ''}
                                     </tbody>
                                 </table>
                             </div>
+
+                            <div class="p-10 bg-slate-900 flex justify-between items-center text-white">
+                                <div>
+                                    <p class="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] mb-1">Row Count</p>
+                                    <p class="text-2xl font-black">${results.length} 件のデータ</p>
+                                </div>
+                                <button id="downloadCsv" class="group px-8 py-4 bg-blue-600 hover:bg-white hover:text-blue-600 text-white rounded-2xl font-black transition-all shadow-xl flex items-center gap-3 active:scale-95">
+                                    <i data-lucide="download" size="20"></i>
+                                    CSVとして保存
+                                </button>
+                            </div>
                         </div>
                     ` : `
-                        <div class="bg-slate-900 p-8 rounded-[2rem] shadow-2xl overflow-auto text-slate-300 font-mono text-sm max-h-[80vh] border border-slate-800">
+                        <div class="bg-slate-900 p-12 rounded-[3rem] shadow-2xl overflow-auto text-blue-200 font-mono text-sm max-h-[80vh] border-8 border-slate-800">
+                            <div class="mb-6 flex items-center gap-2 text-slate-500">
+                                <i data-lucide="code" size="16"></i>
+                                <span class="text-xs font-black uppercase tracking-widest">XML Structural Tree View</span>
+                            </div>
                             ${state.parsedNode ? renderTree(state.parsedNode) : ''}
                         </div>
                     `}
                 </main>
+
+                <footer class="py-10 text-center text-slate-400 text-[10px] font-black uppercase tracking-[0.5em]">
+                    e-Gov XML Document Parser & Premium Calculator
+                </footer>
             </div>
         `;
         attachEvents();
@@ -303,12 +350,13 @@ const render = () => {
 
 const renderTree = (node: XMLNode): string => {
     return `
-        <div class="xml-node my-1">
-            <span class="text-blue-400 font-bold">&lt;${node.name}&gt;</span>
-            ${Object.entries(node.attributes).map(([k, v]) => `<span class="text-xs text-slate-500 ml-2">${k}="${v}"</span>`).join('')}
-            ${node.content ? `<span class="text-white ml-2">${node.content}</span>` : ''}
+        <div class="xml-node my-1 border-l-2 border-slate-800 pl-4 py-1">
+            <span class="text-indigo-400 font-bold opacity-80">&lt;${node.name}</span>
+            ${Object.entries(node.attributes).map(([k, v]) => `<span class="text-xs text-slate-600 ml-2 italic">${k}="${v}"</span>`).join('')}
+            <span class="text-indigo-400 font-bold opacity-80">&gt;</span>
+            ${node.content ? `<span class="text-white mx-2 font-sans">${node.content}</span>` : ''}
             <div>${node.children.map(c => renderTree(c)).join('')}</div>
-            <span class="text-blue-400 font-bold">&lt;/${node.name}&gt;</span>
+            <span class="text-indigo-400 font-bold opacity-40">&lt;/${node.name}&gt;</span>
         </div>
     `;
 };
@@ -325,17 +373,8 @@ const handleFile = (e: Event) => {
             state.parsedNode = parseXML(text);
             state.analysis = localExtractData(state.parsedNode);
             render();
-            
-            if (process.env.API_KEY) {
-                analyzeWithAI(text).then(aiResult => {
-                    if (aiResult.tableData && aiResult.tableData.rows.length > 0) {
-                        state.analysis = aiResult;
-                        render();
-                    }
-                }).catch(err => console.debug("AI enhancement skipped:", err));
-            }
         } catch (err) {
-            alert("XMLの解析に失敗しました。ファイル形式を確認してください。");
+            alert("XMLの解析に失敗しました。正しいXMLファイルか確認してください。");
         }
     };
     reader.readAsText(file);
@@ -370,7 +409,7 @@ const attachEvents = () => {
         const blob = new Blob([csv], { type: 'text/csv' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = `egov_export_${new Date().getTime()}.csv`;
+        a.download = `egov_data_${new Date().getTime()}.csv`;
         a.click();
     });
 };
