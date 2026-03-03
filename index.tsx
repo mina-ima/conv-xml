@@ -370,7 +370,9 @@ const downloadCSV = () => {
         csv = [h.join(","), ...data.rows.map(r => {
             const payDate = getRowDate(
                 r,
-                isBonus ? ["賞与支払年月日", "賞与支払年月"] : ["適用年月", "適用年月日", "資格喪失年月日", "資格喪失年月"]
+                isBonus
+                    ? ["賞与支払年月日", "賞与支払年月"]
+                    : ["適用年月", "適用年月日", "改定年月", "資格喪失年月日", "資格喪失年月"]
             ).ad;
             const birthDate = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]).ad;
             let amtH = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
@@ -487,7 +489,9 @@ const renderNoticeSheet = (data: UniversalData) => {
                 <tbody>${data.rows.map(r => {
                     const payDate = getRowDate(
                         r,
-                        isBonusDoc ? ["賞与支払年月日", "賞与支払年月"] : ["適用年月", "適用年月日", "資格喪失年月日", "資格喪失年月"]
+                        isBonusDoc
+                            ? ["賞与支払年月日", "賞与支払年月"]
+                            : ["適用年月", "適用年月日", "改定年月", "資格喪失年月日", "資格喪失年月"]
                     );
                     const birthDate = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]);
                     const val1 = parseStandardAmount(r[isBonusDoc ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]).toLocaleString();
