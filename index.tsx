@@ -637,6 +637,9 @@ const render = () => {
                     <h1 class="font-black text-xl">e-Gov Explorer <span class="text-blue-600">Hidelity</span></h1>
                 </div>
                 <div class="flex gap-2">
+                    <button id="btn-open" class="flex items-center gap-2 px-6 py-2 rounded-xl font-bold bg-slate-700 text-white hover:bg-slate-800 transition-all shadow-md">
+                        <i data-lucide="folder-open" size="18"></i> ファイルを開く
+                    </button>
                     ${isNotice ? `
                     <button id="btn-calc" class="flex items-center gap-2 px-6 py-2 rounded-xl font-bold ${state.viewMode === 'calculator' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-white'} transition-all shadow-md">
                         <i data-lucide="${state.viewMode === 'calculator' ? 'file-text' : 'calculator'}" size="18"></i> ${state.viewMode === 'calculator' ? '帳票表示に戻る' : '控除額計算シミュレータ'}
@@ -649,6 +652,7 @@ const render = () => {
                     </button>
                 </div>
             </header>
+            <input type="file" id="zipIn2" class="hidden" accept=".zip,.xml" />
             <div class="flex-1 flex overflow-hidden print:block print:overflow-visible">
                 <aside class="w-80 bg-white border-r overflow-y-auto p-4 no-print">
                     ${state.cases.map((c, ci) => `
@@ -738,6 +742,8 @@ const handleUpload = async (e: Event) => {
 
 const attach = () => {
     document.getElementById('home')?.addEventListener('click', () => { state.cases = []; render(); });
+    document.getElementById('btn-open')?.addEventListener('click', () => document.getElementById('zipIn2')?.click());
+    document.getElementById('zipIn2')?.addEventListener('change', handleUpload);
     document.getElementById('sumV')?.addEventListener('click', () => { state.viewMode = 'summary'; render(); });
     document.getElementById('allV')?.addEventListener('click', () => { state.viewMode = 'all'; render(); });
     document.getElementById('treeV')?.addEventListener('click', () => { state.viewMode = 'tree'; render(); });
