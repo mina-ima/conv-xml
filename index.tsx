@@ -63,7 +63,7 @@ const state = {
     cases: [] as CaseEntry[],
     selectedCaseIdx: -1,
     selectedFileIdx: -1,
-    viewMode: 'summary' as 'summary' | 'tree' | 'calculator',
+    viewMode: 'summary' as 'summary' | 'tree' | 'calculator' | 'all',
     isLoading: false,
     loadingMsg: "",
     rates: { 
@@ -78,6 +78,14 @@ const state = {
 const normalize = (val: any): string => {
     if (val === undefined || val === null) return "";
     return String(val).replace(/[０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xFEE0)).trim();
+};
+
+const escapeHTML = (val: any): string => {
+    if (val === undefined || val === null) return "";
+    return String(val)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
 };
 
 const parseStandardAmount = (val: string): number => {
@@ -153,6 +161,26 @@ const getRowDate = (row: Record<string, any>, prefixes: string[], defaultDay: st
     }
 
     return { ad: "", jp: "", fullJp: "" };
+};
+
+const flattenXML = (root: XMLNode) => {
+    const rows: { path: string; value: string }[] = [];
+    const walk = (node: XMLNode, path: string) => {
+        if (node.content !== undefined) rows.push({ path, value: node.content });
+        const totals: Record<string, number> = {};
+        node.children.forEach(c => { totals[c.name] = (totals[c.name] || 0) + 1; });
+        const seen: Record<string, number> = {};
+        node.children.forEach(child => {
+            const count = totals[child.name] || 0;
+            const idx = (seen[child.name] || 0) + 1;
+            seen[child.name] = idx;
+            const seg = count > 1 ? `${child.name}[${idx}]` : child.name;
+            const nextPath = path ? `${path}/${seg}` : seg;
+            walk(child, nextPath);
+        });
+    };
+    walk(root, root.name);
+    return rows;
 };
 
 // --- Data Extraction ---
@@ -472,6 +500,43 @@ const renderNoticeSheet = (data: UniversalData) => {
     `;
 };
 
+const renderAllFields = (parsed?: XMLNode) => {
+    if (!parsed) {
+        return `<div class="text-center p-20 bg-white rounded-3xl shadow">表示対象のXMLがありません</div>`;
+    }
+    const rows = flattenXML(parsed);
+    return `
+        <div class="bg-white w-[1100px] mx-auto p-10 rounded-3xl shadow-xl border border-slate-200">
+            <div class="flex items-center justify-between mb-6">
+                <div>
+                    <h2 class="text-2xl font-black text-slate-900">全項目一覧</h2>
+                    <p class="text-sm text-slate-500 mt-1">XMLに含まれる全タグを階層パスで表示します（${rows.length}件）</p>
+                </div>
+                <div class="text-[11px] text-slate-500">パス形式: ルート/子要素/同名要素[n]</div>
+            </div>
+            <div class="border border-slate-200 rounded-2xl overflow-hidden">
+                <table class="w-full text-[12px]">
+                    <thead class="bg-slate-800 text-white">
+                        <tr>
+                            <th class="text-left px-4 py-3 w-[55%]">パス</th>
+                            <th class="text-left px-4 py-3">値</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        ${rows.map(r => {
+                            const val = r.value === "" ? `<span class="text-slate-300">（空）</span>` : escapeHTML(r.value);
+                            return `<tr class="hover:bg-slate-50">
+                                <td class="px-4 py-2 font-mono text-slate-700 break-all">${escapeHTML(r.path)}</td>
+                                <td class="px-4 py-2 text-slate-900 break-all">${val}</td>
+                            </tr>`;
+                        }).join('')}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    `;
+};
+
 const renderCalculatorView = (data: UniversalData) => {
     const isBonus = data.docType === 'BONUS_NOTICE';
     return `
@@ -591,16 +656,18 @@ const render = () => {
                 </aside>
                 <main class="flex-1 bg-slate-200 overflow-y-auto p-12 print:p-0 print:bg-white print:overflow-visible print:h-auto">
                     <div class="mb-8 flex justify-center bg-white p-2 rounded-2xl w-fit mx-auto shadow-sm no-print border border-slate-300">
-                        <button id="sumV" class="px-10 py-3 rounded-xl font-black ${state.viewMode !== 'tree' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}">帳票プレビュー</button>
+                        <button id="sumV" class="px-10 py-3 rounded-xl font-black ${state.viewMode === 'summary' || state.viewMode === 'calculator' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}">帳票プレビュー</button>
+                        <button id="allV" class="px-10 py-3 rounded-xl font-black ${state.viewMode === 'all' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}">全項目一覧</button>
                         <button id="treeV" class="px-10 py-3 rounded-xl font-black ${state.viewMode === 'tree' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}">XML構造解析</button>
                     </div>
                     <div class="print-area print:m-0 print:w-full">
                         ${state.viewMode === 'calculator' && data ? renderCalculatorView(data) :
+                          (state.viewMode === 'all' ? renderAllFields(cur?.parsed) :
                           (state.viewMode !== 'tree' && data ? 
                             (data.docType === 'SUMMARY' ? renderSummarySheet(data) : 
                              data.docType === 'ANNOUNCEMENT' ? renderAnnouncementSheet(data) :
                              renderNoticeSheet(data)) : 
-                          (state.viewMode === 'tree' ? `<pre class="bg-slate-900 text-blue-400 p-10 rounded-3xl font-mono text-xs overflow-auto shadow-2xl">${JSON.stringify(cur?.parsed, null, 2)}</pre>` : '<div class="text-center p-20 bg-white rounded-3xl shadow no-print">プレビュー対象外のファイルです</div>'))}
+                          (state.viewMode === 'tree' ? `<pre class="bg-slate-900 text-blue-400 p-10 rounded-3xl font-mono text-xs overflow-auto shadow-2xl">${JSON.stringify(cur?.parsed, null, 2)}</pre>` : '<div class="text-center p-20 bg-white rounded-3xl shadow no-print">プレビュー対象外のファイルです</div>')))}
                     </div>
                 </main>
             </div>
@@ -668,6 +735,7 @@ const handleUpload = async (e: Event) => {
 const attach = () => {
     document.getElementById('home')?.addEventListener('click', () => { state.cases = []; render(); });
     document.getElementById('sumV')?.addEventListener('click', () => { state.viewMode = 'summary'; render(); });
+    document.getElementById('allV')?.addEventListener('click', () => { state.viewMode = 'all'; render(); });
     document.getElementById('treeV')?.addEventListener('click', () => { state.viewMode = 'tree'; render(); });
     document.getElementById('btn-calc')?.addEventListener('click', () => { state.viewMode = state.viewMode === 'calculator' ? 'summary' : 'calculator'; render(); });
     document.getElementById('btn-csv')?.addEventListener('click', downloadCSV);
