@@ -119,6 +119,42 @@ const getFormattedDates = (g: any, y: any, m: any, d: any = "1") => {
     };
 };
 
+const getRowDate = (row: Record<string, any>, prefixes: string[], defaultDay: string = "1") => {
+    const tryPrefix = (prefix: string) => {
+        const g = row[`${prefix}_元号`];
+        const y = row[`${prefix}_年`];
+        const m = row[`${prefix}_月`];
+        const d = row[`${prefix}_日`];
+        if (g || y || m || d) return { g, y, m, d };
+        const g2 = row[`${prefix}元号`];
+        const y2 = row[`${prefix}年`];
+        const m2 = row[`${prefix}月`];
+        const d2 = row[`${prefix}日`];
+        if (g2 || y2 || m2 || d2) return { g: g2, y: y2, m: m2, d: d2 };
+        return null;
+    };
+
+    for (const p of prefixes) {
+        const parts = tryPrefix(p);
+        if (parts) {
+            return getFormattedDates(parts.g, parts.y, parts.m, parts.d || defaultDay);
+        }
+    }
+
+    for (const p of prefixes) {
+        const keys = Object.keys(row);
+        const yKey = keys.find(k => k.includes(p) && k.endsWith("_年"));
+        const mKey = keys.find(k => k.includes(p) && k.endsWith("_月"));
+        const gKey = keys.find(k => k.includes(p) && k.endsWith("_元号"));
+        const dKey = keys.find(k => k.includes(p) && k.endsWith("_日"));
+        if (yKey || mKey || gKey || dKey) {
+            return getFormattedDates(row[gKey || ""], row[yKey || ""], row[mKey || ""], row[dKey || ""] || defaultDay);
+        }
+    }
+
+    return { ad: "", jp: "", fullJp: "" };
+};
+
 // --- Data Extraction ---
 const extractDetailed = (node: XMLNode): UniversalData | null => {
     const dataMap: Record<string, any> = {};
@@ -304,8 +340,10 @@ const downloadCSV = () => {
     } else {
         const h = ["整理番号", "氏名", "支払日/適用月", "標準額(健保)", "標準額(厚年)", "生年月日", "種別"];
         csv = [h.join(","), ...data.rows.map(r => {
-            const datePrefix = isBonus ? "賞与支払年月日" : "適用年月";
-            const payDate = getFormattedDates(r[`${datePrefix}_元号`], r[`${datePrefix}_年`], r[`${datePrefix}_月`], r[`${datePrefix}_日`] || "1").ad;
+            const payDate = getRowDate(
+                r,
+                isBonus ? ["賞与支払年月日", "賞与支払年月"] : ["適用年月", "適用年月日", "資格喪失年月日", "資格喪失年月"]
+            ).ad;
             const birthDate = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]).ad;
             let amtH = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]);
             let amtP = parseStandardAmount(r[isBonus ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]);
@@ -419,8 +457,10 @@ const renderNoticeSheet = (data: UniversalData) => {
             <table class="w-full border-collapse border-[1.5px] border-black text-sm mb-12">
                 <thead class="bg-gray-50"><tr class="h-14"><th class="border border-black px-1 py-1 font-bold w-20">整理番号</th><th class="border border-black px-4 py-1 font-bold">氏名</th><th class="border border-black px-1 py-1 font-bold w-32">${isBonusDoc ? '支払年月日' : '適用年月'}<br>(西暦)</th><th class="border border-black px-1 py-1 font-bold" colspan="2">${isBonusDoc ? '標準賞与額' : '標準報酬月額'}</th><th class="border border-black px-1 py-1 font-bold w-32">生年月日<br>(西暦)</th><th class="border border-black px-1 py-1 font-bold w-20">種別</th></tr></thead>
                 <tbody>${data.rows.map(r => {
-                    const datePrefix = isBonusDoc ? "賞与支払年月日" : "適用年月";
-                    const payDate = getFormattedDates(r[`${datePrefix}_元号`], r[`${datePrefix}_年`], r[`${datePrefix}_月`], r[`${datePrefix}_日`] || "1");
+                    const payDate = getRowDate(
+                        r,
+                        isBonusDoc ? ["賞与支払年月日", "賞与支払年月"] : ["適用年月", "適用年月日", "資格喪失年月日", "資格喪失年月"]
+                    );
                     const birthDate = getFormattedDates(r["生年月日_元号"], r["生年月日_年"], r["生年月日_月"], r["生年月日_日"]);
                     const val1 = parseStandardAmount(r[isBonusDoc ? "決定後の標準賞与額_健保" : "決定後の標準報酬月額_健保"]).toLocaleString();
                     const val2 = parseStandardAmount(r[isBonusDoc ? "決定後の標準賞与額_厚年" : "決定後の標準報酬月額_厚年"]).toLocaleString();
