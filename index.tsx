@@ -239,6 +239,14 @@ const extractDetailed = (node: XMLNode): UniversalData | null => {
         if (n.name === "_被保険者") {
             const r: any = {};
             n.children.forEach(c => r[c.name] = c.content);
+            if (!r["被保険者氏名"]) {
+                r["被保険者氏名"] =
+                    r["被保険者漢字氏名"] ||
+                    r["被保険者カナ氏名"] ||
+                    r["被保険者氏名_漢字"] ||
+                    r["氏名"] ||
+                    "";
+            }
             rows.push(r);
         }
         n.children.forEach(findRows);
