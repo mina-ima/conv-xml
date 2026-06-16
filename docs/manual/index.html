@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>e-Gov XML Reader &amp; Assistant 取扱説明書</title>
+<style>
+:root{--fg:#1a1a1a;--muted:#666;--accent:#2563eb;--bg:#fff;--code:#f4f4f5;--border:#e5e7eb}*{box-sizing:border-box}body{font-family:-apple-system,"Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,sans-serif;line-height:1.8;color:var(--fg);background:var(--bg);max-width:820px;margin:0 auto;padding:24px 18px}h1{font-size:1.7rem;border-bottom:3px solid var(--accent);padding-bottom:.4em;margin-top:0}h2{font-size:1.3rem;margin-top:2em;border-left:5px solid var(--accent);padding-left:.5em}h3{font-size:1.1rem;margin-top:1.5em}code{background:var(--code);padding:.15em .4em;border-radius:4px;font-size:.9em}pre{background:var(--code);padding:14px;border-radius:8px;overflow-x:auto}pre code{background:none;padding:0}table{border-collapse:collapse;width:100%;margin:1em 0}th,td{border:1px solid var(--border);padding:8px 10px;text-align:left}th{background:#f8fafc}blockquote{border-left:4px solid var(--accent);background:#f0f6ff;margin:1em 0;padding:.6em 1em;color:#334}a{color:var(--accent)}footer{margin-top:3em;padding-top:1em;border-top:1px solid var(--border);color:var(--muted);font-size:.85rem}@media(max-width:600px){body{padding:16px 12px}h1{font-size:1.4rem}}
+</style>
+</head>
+<body>
+<h1>e-Gov XML Reader &amp; Assistant 取扱説明書</h1>
+<blockquote>e-Govからダウンロードした行政手続きのXMLファイルを、読みやすく表示し、AI（Gemini）が内容を分かりやすく解説・整理してくれるツールです。</blockquote>
+
+<h2>このアプリでできること</h2>
+<ul>
+<li>e-Govで取得したXMLファイル（ZIP含む）を読み込んで表示します。</li>
+<li>内容を要約・通知・お知らせなどの種別ごとに、人が読みやすい形に整理して表示します。</li>
+<li>XMLの構造をツリー表示で確認できます。</li>
+<li>AI（Gemini）が内容を解説し、何が書かれているかを分かりやすく示します。</li>
+<li>社会保険料などの計算を補助する機能（保険料率の設定・計算ビュー）を備えています。</li>
+</ul>
+<blockquote>取り扱う書類の正確な種類や項目はファイル内容に依存します。表示・計算結果は必ず原本（公的書類）でご確認ください。</blockquote>
+
+<h2>想定ユーザー・利用シーン</h2>
+<ul>
+<li>総務・人事・労務の担当者で、e-Govから届くXML書類の中身を素早く把握したい方。</li>
+<li>電子申請の控えや通知書の内容を、原文XMLのまま読むのが大変だと感じている方。</li>
+<li>社会保険料などの金額をざっと確認・試算したい方。</li>
+</ul>
+
+<h2>動作環境・前提</h2>
+<ul>
+<li>PCのWebブラウザ（モダンブラウザ）で動作します。</li>
+<li>AI解説機能を使うには、Google Gemini のAPIキーが必要です。</li>
+<li>自分で動かす場合は Node.js が必要です。</li>
+</ul>
+
+<h2>セットアップ</h2>
+<p>ローカルで動かす場合:</p>
+<ol>
+<li>依存パッケージをインストールします。
+<pre><code>pnpm install</code></pre></li>
+<li><code>.env.local</code> に <code>GEMINI_API_KEY</code> を設定します（Google AI Studio で取得したキー）。</li>
+<li>開発サーバーを起動します。
+<pre><code>pnpm dev</code></pre></li>
+</ol>
+
+<h2>使い方（ステップbyステップ）</h2>
+<ol>
+<li>アプリを開きます。</li>
+<li>e-GovからダウンロードしたXMLファイル（またはZIP）を読み込みます。</li>
+<li>左側で案件・ファイルを選び、右側で内容を確認します。</li>
+<li>表示モードを切り替えて確認します。
+  <ul>
+  <li>要約（summary）: 内容を整理した読みやすい表示。</li>
+  <li>ツリー（tree）: XMLの構造をそのまま確認。</li>
+  <li>計算（calculator）: 保険料率を設定して金額を試算。</li>
+  <li>全て（all）: まとめて表示。</li>
+  </ul>
+</li>
+<li>AI解説を使うと、書類の意味や要点を日本語で説明してくれます。</li>
+<li>計算ビューでは健康保険・厚生年金・介護保険などの料率を調整して確認できます。</li>
+</ol>
+
+<h2>主な機能</h2>
+<ul>
+<li>XML/ZIP 読み込み: 複数ファイル・複数案件をまとめて扱えます。</li>
+<li>読みやすい要約表示: 書類種別に応じて項目を整理して表示します。</li>
+<li>XMLツリービュー: 構造を階層表示で確認できます。</li>
+<li>AI解説（Gemini）: 内容の意味や要点を日本語で解説します。</li>
+<li>計算補助: 保険料率（健康保険・厚生年金・介護保険など）を設定し金額を試算します。全角数字の正規化にも対応します。</li>
+</ul>
+
+<h2>よくある質問・トラブルシューティング</h2>
+<ul>
+<li><strong>Q: AI解説が動きません。</strong><br>A: <code>GEMINI_API_KEY</code> が設定されているか、無料枠の上限に達していないかを確認してください。</li>
+<li><strong>Q: ファイルがうまく読めません。</strong><br>A: e-Govからダウンロードした正しいXML（またはZIP）かをご確認ください。想定外の書式は正しく整理表示できないことがあります。</li>
+<li><strong>Q: 計算結果は正確ですか。</strong><br>A: 設定した料率に基づく試算です。最終的な金額は必ず公的書類・公式情報でご確認ください。</li>
+</ul>
+
+<h2>開発者向けメモ（技術スタック/起動コマンド/ビルド/デプロイ先・本番URL）</h2>
+<ul>
+<li>技術スタック: フロント=バニラ TypeScript（フレームワークレス、DOM直接操作） + Vite / スタイル=Tailwind CSS（CDN）・アイコン lucide / AI=Google Gemini（<code>@google/genai</code>）/ ファイル処理=JSZip（ZIP解凍）</li>
+<li>エントリ: <code>index.html</code> → <code>index.tsx</code>（アプリ本体。状態管理・XMLパース・計算・AI連携を内包）。<code>services/geminiService.ts</code>、<code>components/XMLTreeView.tsx</code> を補助的に使用。<br>注: <code>App.tsx</code> / <code>main.ts</code> はリポジトリ上に残っていますが中身は「削除されました」となっており、実体は <code>index.tsx</code> 側にあります。</li>
+<li>起動コマンド:
+<pre><code># 開発
+pnpm dev
+# ビルド
+pnpm build
+# プレビュー
+pnpm preview</code></pre></li>
+<li>環境変数: <code>GEMINI_API_KEY</code>（<code>.env.local</code>）。</li>
+<li>本番URL: なし（未確認。公開デプロイURLは確認できませんでした。AI Studio 由来のプロジェクト）。</li>
+<li>状態: 開発中。</li>
+</ul>
+
+<footer>本書は自動生成された取扱説明書です。</footer>
+</body>
+</html>
